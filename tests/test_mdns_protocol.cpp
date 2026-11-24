@@ -10,12 +10,15 @@
 #include <vector>
 
 #include "test_util.h"
+#include "core/bits.h"
 
-static uint16_t readBE16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
+namespace bits = satellite::bits;
+
+static uint16_t readBE16(const uint8_t* p) { return bits::loadBe16(p); }
 
 static uint32_t readBE32(const uint8_t* p) {
-    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
-           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+    return (static_cast<uint32_t>(p[0]) << 24U) | (static_cast<uint32_t>(p[1]) << 16U) |
+           (static_cast<uint32_t>(p[2]) << 8U) | static_cast<uint32_t>(p[3]);
 }
 
 // One decoded RR from an encodeResponse() packet. `cls` keeps the cache-flush
@@ -216,22 +219,22 @@ static void test_readDnsName_rejectsPointerPastEnd() {
 static size_t appendQuestion(uint8_t* buf, size_t cap, size_t pos, const std::string& name,
                              uint16_t qtype, uint16_t qclass) {
     pos += mdns::writeDnsName(buf + pos, cap - pos, name);
-    buf[pos++] = static_cast<uint8_t>(qtype >> 8);
-    buf[pos++] = static_cast<uint8_t>(qtype & 0xFF);
-    buf[pos++] = static_cast<uint8_t>(qclass >> 8);
-    buf[pos++] = static_cast<uint8_t>(qclass & 0xFF);
+    buf[pos++] = static_cast<uint8_t>(qtype >> 8U);
+    buf[pos++] = static_cast<uint8_t>(qtype & 0xFFU);
+    buf[pos++] = static_cast<uint8_t>(qclass >> 8U);
+    buf[pos++] = static_cast<uint8_t>(qclass & 0xFFU);
     return pos;
 }
 
 static void writeQueryHeader(uint8_t* buf, uint16_t id, uint16_t qd, uint16_t an) {
-    buf[0] = static_cast<uint8_t>(id >> 8);
-    buf[1] = static_cast<uint8_t>(id & 0xFF);
+    buf[0] = static_cast<uint8_t>(id >> 8U);
+    buf[1] = static_cast<uint8_t>(id & 0xFFU);
     buf[2] = 0x00;
     buf[3] = 0x00; // flags: query
-    buf[4] = static_cast<uint8_t>(qd >> 8);
-    buf[5] = static_cast<uint8_t>(qd & 0xFF);
-    buf[6] = static_cast<uint8_t>(an >> 8);
-    buf[7] = static_cast<uint8_t>(an & 0xFF);
+    buf[4] = static_cast<uint8_t>(qd >> 8U);
+    buf[5] = static_cast<uint8_t>(qd & 0xFFU);
+    buf[6] = static_cast<uint8_t>(an >> 8U);
+    buf[7] = static_cast<uint8_t>(an & 0xFFU);
     buf[8] = buf[9] = buf[10] = buf[11] = 0x00; // NS / AR counts
 }
 
@@ -242,16 +245,16 @@ static size_t appendAnswer(uint8_t* buf, size_t cap, size_t pos, const std::stri
                            uint16_t rtype, uint16_t rclass, uint32_t ttl, const uint8_t* rdata,
                            uint16_t rdlen) {
     pos += mdns::writeDnsName(buf + pos, cap - pos, name);
-    buf[pos++] = static_cast<uint8_t>(rtype >> 8);
-    buf[pos++] = static_cast<uint8_t>(rtype & 0xFF);
-    buf[pos++] = static_cast<uint8_t>(rclass >> 8);
-    buf[pos++] = static_cast<uint8_t>(rclass & 0xFF);
-    buf[pos++] = static_cast<uint8_t>((ttl >> 24) & 0xFF);
-    buf[pos++] = static_cast<uint8_t>((ttl >> 16) & 0xFF);
-    buf[pos++] = static_cast<uint8_t>((ttl >> 8) & 0xFF);
-    buf[pos++] = static_cast<uint8_t>(ttl & 0xFF);
-    buf[pos++] = static_cast<uint8_t>(rdlen >> 8);
-    buf[pos++] = static_cast<uint8_t>(rdlen & 0xFF);
+    buf[pos++] = static_cast<uint8_t>(rtype >> 8U);
+    buf[pos++] = static_cast<uint8_t>(rtype & 0xFFU);
+    buf[pos++] = static_cast<uint8_t>(rclass >> 8U);
+    buf[pos++] = static_cast<uint8_t>(rclass & 0xFFU);
+    buf[pos++] = static_cast<uint8_t>((ttl >> 24U) & 0xFFU);
+    buf[pos++] = static_cast<uint8_t>((ttl >> 16U) & 0xFFU);
+    buf[pos++] = static_cast<uint8_t>((ttl >> 8U) & 0xFFU);
+    buf[pos++] = static_cast<uint8_t>(ttl & 0xFFU);
+    buf[pos++] = static_cast<uint8_t>(rdlen >> 8U);
+    buf[pos++] = static_cast<uint8_t>(rdlen & 0xFFU);
     for (uint16_t i = 0; i < rdlen; ++i) buf[pos++] = rdata != nullptr ? rdata[i] : 0;
     return pos;
 }
@@ -402,8 +405,8 @@ static void test_encodeResponse_minimumPacketShape() {
     std::vector<Rr> rrs;
     EXPECT(parseResponseRecords(buf, n, h, rrs));
     EXPECT_EQ(h.id, 0xBEEFu);
-    EXPECT_EQ((h.flags >> 15) & 1, 1); // QR
-    EXPECT_EQ((h.flags >> 10) & 1, 1); // AA
+    EXPECT_EQ((bits::u32(h.flags) >> 15U) & 1U, 1U); // QR
+    EXPECT_EQ((bits::u32(h.flags) >> 10U) & 1U, 1U); // AA
     EXPECT_EQ(h.qdCount, 0u);
     EXPECT_EQ(h.anCount, 3u);
     EXPECT_EQ(rrs.size(), 3u);
@@ -603,8 +606,8 @@ static void test_encodeAnnouncement_recordSetAndShape() {
     EXPECT(parseResponseRecords(buf, n, h, rrs));
     // §8.3: an announcement answers no query → transaction ID is 0.
     EXPECT_EQ(h.id, 0u);
-    EXPECT_EQ((h.flags >> 15) & 1, 1); // QR
-    EXPECT_EQ((h.flags >> 10) & 1, 1); // AA
+    EXPECT_EQ((bits::u32(h.flags) >> 15U) & 1U, 1U); // QR
+    EXPECT_EQ((bits::u32(h.flags) >> 10U) & 1U, 1U); // AA
     EXPECT_EQ(h.qdCount, 0u);
     EXPECT_EQ(h.anCount, 4u);
     EXPECT(findRr(rrs, mdns::TYPE_PTR) != nullptr);
@@ -727,8 +730,8 @@ static void test_encodeProbeQuery_shape() {
     std::vector<mdns::Answer> ans;
     std::vector<mdns::ProbeRecord> authority;
     EXPECT(mdns::parsePacket(buf, n, h, qs, ans, authority));
-    EXPECT_EQ(h.id, 0u);               // mDNS query → txn id 0
-    EXPECT_EQ((h.flags >> 15) & 1, 0); // QR clear → it is a query
+    EXPECT_EQ(h.id, 0u);                             // mDNS query → txn id 0
+    EXPECT_EQ((bits::u32(h.flags) >> 15U) & 1U, 0U); // QR clear → it is a query
     EXPECT_EQ(h.qdCount, 1u);
     EXPECT_EQ(h.anCount, 0u);
     EXPECT_EQ(qs.size(), 1u);
@@ -787,7 +790,7 @@ static void test_encodeProbeQuery_authorityNamesAndSrvRdata() {
             EXPECT_EQ(r.name, std::string("satellite-host._satellite._udp.local."));
             // SRV rdata: priority(2) weight(2) port(2) + uncompressed target.
             EXPECT(r.rdata.size() > 6);
-            const uint16_t port = static_cast<uint16_t>((r.rdata[4] << 8) | r.rdata[5]);
+            const uint16_t port = bits::loadBe16(r.rdata.data() + 4);
             EXPECT_EQ(port, 50505u);
         }
         if (r.type == mdns::TYPE_TXT) {
@@ -928,8 +931,7 @@ static void test_compareRecordSets_identicalSetsAreEqual() {
         makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
         makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {0}),
     };
-    std::vector<mdns::ProbeRecord> b = a; // identical
-    EXPECT_EQ(mdns::compareRecordSets(a, b), 0);
+    EXPECT_EQ(mdns::compareRecordSets(a, a), 0); // each side is its own copy
 }
 
 static void test_compareRecordSets_weWinOnGreaterRdataByte() {
@@ -1072,8 +1074,9 @@ static void test_buildProposedRecords_includesAWhenIpv4Supplied() {
     std::vector<mdns::ProbeRecord> recs = mdns::buildProposedRecords(in);
     EXPECT_EQ(recs.size(), 3u);
     const mdns::ProbeRecord* a = nullptr;
-    for (const auto& r : recs)
+    for (const auto& r : recs) {
         if (r.type == mdns::TYPE_A) a = &r;
+    }
     EXPECT(a != nullptr);
     if (a != nullptr) {
         EXPECT_EQ(a->name, std::string("satellite-host.local."));
@@ -1113,7 +1116,7 @@ static std::string testNextInstanceLabel(const std::string& label) {
             const size_t digitsEnd = label.size() - 1;
             bool allDigits = true;
             for (size_t i = digitsStart; i < digitsEnd; ++i) {
-                if (!std::isdigit(static_cast<unsigned char>(label[i]))) {
+                if (std::isdigit(static_cast<unsigned char>(label[i])) == 0) {
                     allDigits = false;
                     break;
                 }
@@ -1312,7 +1315,7 @@ static void test_parsePacket_rejectsAnswerCompressionLoop() {
                                 mdns::CLASS_IN);
     // Answer name is a pointer to itself; readDnsName must reject it.
     buf[pos] = 0xC0;
-    buf[pos + 1] = static_cast<uint8_t>(pos & 0xFF);
+    buf[pos + 1] = static_cast<uint8_t>(pos & 0xFFU);
     pos += 2;
     mdns::Header h{};
     std::vector<mdns::Question> qs;
@@ -1606,119 +1609,111 @@ static void test_probeProposesTheAnnouncementBytes() {
 }
 
 int main() {
-    std::cout << "Running mDNS protocol tests...\n\n";
+    return satellite::test::runMain("test_mdns_protocol", [] {
+        std::cout << "Running mDNS protocol tests...\n\n";
 
-    test_writeDnsName_basic();
-    test_writeDnsName_singleLabel();
-    test_writeDnsName_emptyTerminatorOnly();
-    test_writeDnsName_rejectsOversizedLabel();
-    test_writeDnsName_acceptsMaxLabel();
-    test_writeDnsName_rejectsUndersizedBuffer();
-    test_writeDnsName_rejectsBufferTooSmallForTerminator();
+        test_writeDnsName_basic();
+        test_writeDnsName_singleLabel();
+        test_writeDnsName_emptyTerminatorOnly();
+        test_writeDnsName_rejectsOversizedLabel();
+        test_writeDnsName_acceptsMaxLabel();
+        test_writeDnsName_rejectsUndersizedBuffer();
+        test_writeDnsName_rejectsBufferTooSmallForTerminator();
 
-    test_readDnsName_roundTrip();
-    test_readDnsName_appendsTrailingDot();
-    test_readDnsName_atNonZeroOffset();
-    test_readDnsName_followsCompressionPointer();
-    test_readDnsName_rejectsForwardJump();
-    test_readDnsName_rejectsTruncatedLabel();
-    test_readDnsName_rejectsPointerPastEnd();
+        test_readDnsName_roundTrip();
+        test_readDnsName_appendsTrailingDot();
+        test_readDnsName_atNonZeroOffset();
+        test_readDnsName_followsCompressionPointer();
+        test_readDnsName_rejectsForwardJump();
+        test_readDnsName_rejectsTruncatedLabel();
+        test_readDnsName_rejectsPointerPastEnd();
 
-    test_parsePacket_singleQuestion();
-    test_parsePacket_nonQuClass();
-    test_parsePacket_multipleQuestions();
-    test_parsePacket_emptyQuestionSection();
-    test_parsePacket_toleratesStaleAnswerCount();
-    test_parsePacket_rejectsTruncatedHeader();
-    test_parsePacket_rejectsTruncatedQuestion();
+        test_parsePacket_singleQuestion();
+        test_parsePacket_nonQuClass();
+        test_parsePacket_multipleQuestions();
+        test_parsePacket_emptyQuestionSection();
+        test_parsePacket_toleratesStaleAnswerCount();
+        test_parsePacket_rejectsTruncatedHeader();
+        test_parsePacket_rejectsTruncatedQuestion();
 
-    test_parsePacket_surfacesKnownAnswer();
-    test_parsePacket_surfacesMultipleKnownAnswers();
-    test_parsePacket_cacheFlushMaskedOffKnownAnswer();
-    test_parsePacket_fourArgStillSkipsAnswers();
-    test_parsePacket_rejectsTruncatedAnswerHeader();
-    test_parsePacket_rejectsAnswerRdlenOverrun();
-    test_parsePacket_rejectsAnswerCountOverrun();
-    test_parsePacket_rejectsAnswerCompressionLoop();
+        test_parsePacket_surfacesKnownAnswer();
+        test_parsePacket_surfacesMultipleKnownAnswers();
+        test_parsePacket_cacheFlushMaskedOffKnownAnswer();
+        test_parsePacket_fourArgStillSkipsAnswers();
+        test_parsePacket_rejectsTruncatedAnswerHeader();
+        test_parsePacket_rejectsAnswerRdlenOverrun();
+        test_parsePacket_rejectsAnswerCountOverrun();
+        test_parsePacket_rejectsAnswerCompressionLoop();
 
-    test_questionMatchesService_ptr();
-    test_questionMatchesService_any();
-    test_questionMatchesService_caseInsensitive();
-    test_questionMatchesService_rejectsWrongType();
-    test_questionMatchesService_rejectsWrongName();
-    test_questionMatchesService_rejectsPrefixAndSuffix();
+        test_questionMatchesService_ptr();
+        test_questionMatchesService_any();
+        test_questionMatchesService_caseInsensitive();
+        test_questionMatchesService_rejectsWrongType();
+        test_questionMatchesService_rejectsWrongName();
+        test_questionMatchesService_rejectsPrefixAndSuffix();
 
-    test_encodeResponse_minimumPacketShape();
-    test_encodeResponse_includesARecordWhenIpv4Provided();
-    test_encodeResponse_ptrTargetsInstanceFqdn();
-    test_encodeResponse_srvCarriesPortAndTarget();
-    test_encodeResponse_cacheFlushBits();
-    test_encodeResponse_writesTxtPairs();
-    test_encodeResponse_emptyTxtIsZeroLengthString();
-    test_encodeResponse_normalTtls();
-    test_encodeResponse_goodbyeUsesTtlZero();
-    test_encodeResponse_rejectsUndersizedBuffer();
-    test_encodeResponse_rejectsBufferBetweenHeaderAndBody();
+        test_encodeResponse_minimumPacketShape();
+        test_encodeResponse_includesARecordWhenIpv4Provided();
+        test_encodeResponse_ptrTargetsInstanceFqdn();
+        test_encodeResponse_srvCarriesPortAndTarget();
+        test_encodeResponse_cacheFlushBits();
+        test_encodeResponse_writesTxtPairs();
+        test_encodeResponse_emptyTxtIsZeroLengthString();
+        test_encodeResponse_normalTtls();
+        test_encodeResponse_goodbyeUsesTtlZero();
+        test_encodeResponse_rejectsUndersizedBuffer();
+        test_encodeResponse_rejectsBufferBetweenHeaderAndBody();
 
-    test_encodeAnnouncement_recordSetAndShape();
-    test_encodeAnnouncement_cacheFlushBits();
-    test_encodeAnnouncement_recordContentMatchesResponse();
-    test_encodeAnnouncement_withoutIpv4OmitsARecord();
-    test_encodeAnnouncement_normalTtlsNeverZero();
+        test_encodeAnnouncement_recordSetAndShape();
+        test_encodeAnnouncement_cacheFlushBits();
+        test_encodeAnnouncement_recordContentMatchesResponse();
+        test_encodeAnnouncement_withoutIpv4OmitsARecord();
+        test_encodeAnnouncement_normalTtlsNeverZero();
 
-    test_encodeProbeQuery_shape();
-    test_encodeProbeQuery_authoritySectionHoldsProposedRecords();
-    test_encodeProbeQuery_authorityNamesAndSrvRdata();
-    test_encodeProbeQuery_rejectsUndersizedBuffer();
+        test_encodeProbeQuery_shape();
+        test_encodeProbeQuery_authoritySectionHoldsProposedRecords();
+        test_encodeProbeQuery_authorityNamesAndSrvRdata();
+        test_encodeProbeQuery_rejectsUndersizedBuffer();
 
-    test_parsePacket_surfacesAuthorityRecords();
-    test_parsePacket_authorityAfterKnownAnswers();
-    test_parsePacket_authorityRejectsRdlenOverrun();
-    test_authorityHasRecordFor_matchesCaseInsensitively();
+        test_parsePacket_surfacesAuthorityRecords();
+        test_parsePacket_authorityAfterKnownAnswers();
+        test_parsePacket_authorityRejectsRdlenOverrun();
+        test_authorityHasRecordFor_matchesCaseInsensitively();
 
-    test_compareRecordSets_identicalSetsAreEqual();
-    test_compareRecordSets_weWinOnGreaterRdataByte();
-    test_compareRecordSets_weLoseOnSmallerRdataByte();
-    test_compareRecordSets_rdataBytesAreUnsigned();
-    test_compareRecordSets_classComparedBeforeType();
-    test_compareRecordSets_typeBreaksTieWhenClassEqual();
-    test_compareRecordSets_shorterRdataPrefixSortsEarlier();
-    test_compareRecordSets_longerSetWinsWhenPrefixMatches();
-    test_compareRecordSets_sortsBeforeComparing();
-    test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs();
+        test_compareRecordSets_identicalSetsAreEqual();
+        test_compareRecordSets_weWinOnGreaterRdataByte();
+        test_compareRecordSets_weLoseOnSmallerRdataByte();
+        test_compareRecordSets_rdataBytesAreUnsigned();
+        test_compareRecordSets_classComparedBeforeType();
+        test_compareRecordSets_typeBreaksTieWhenClassEqual();
+        test_compareRecordSets_shorterRdataPrefixSortsEarlier();
+        test_compareRecordSets_longerSetWinsWhenPrefixMatches();
+        test_compareRecordSets_sortsBeforeComparing();
+        test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs();
 
-    test_buildProposedRecords_srvTxtOnlyWithoutIpv4();
-    test_buildProposedRecords_includesAWhenIpv4Supplied();
-    test_buildProposedRecords_matchesEncodedProbeAuthority();
+        test_buildProposedRecords_srvTxtOnlyWithoutIpv4();
+        test_buildProposedRecords_includesAWhenIpv4Supplied();
+        test_buildProposedRecords_matchesEncodedProbeAuthority();
 
-    test_conflictRename_firstConflictAppendsTwo();
-    test_conflictRename_subsequentConflictsIncrement();
-    test_conflictRename_nonSuffixParensAreNotMistakenForCounter();
+        test_conflictRename_firstConflictAppendsTwo();
+        test_conflictRename_subsequentConflictsIncrement();
+        test_conflictRename_nonSuffixParensAreNotMistakenForCounter();
 
-    test_isKnownAnswerSuppressed_freshAnswerSuppresses();
-    test_isKnownAnswerSuppressed_lowTtlDoesNotSuppress();
-    test_isKnownAnswerSuppressed_typeAndNameMustMatch();
-    test_isKnownAnswerSuppressed_caseInsensitiveName();
+        test_isKnownAnswerSuppressed_freshAnswerSuppresses();
+        test_isKnownAnswerSuppressed_lowTtlDoesNotSuppress();
+        test_isKnownAnswerSuppressed_typeAndNameMustMatch();
+        test_isKnownAnswerSuppressed_caseInsensitiveName();
 
-    test_encodeResponse_suppressPtrOmitsPtr();
-    test_encodeResponse_suppressSrvAndTxt();
-    test_encodeResponse_suppressAllReturnsZero();
-    test_encodeResponse_suppressAOnlyDropsA();
+        test_encodeResponse_suppressPtrOmitsPtr();
+        test_encodeResponse_suppressSrvAndTxt();
+        test_encodeResponse_suppressAllReturnsZero();
+        test_encodeResponse_suppressAOnlyDropsA();
 
-    test_knownAnswer_endToEnd_suppressesKnownPtr();
-    test_knownAnswer_endToEnd_staleTtlStillSent();
+        test_knownAnswer_endToEnd_suppressesKnownPtr();
+        test_knownAnswer_endToEnd_staleTtlStillSent();
 
-    test_nameEqCi();
-    test_classifyQuestions();
-    test_probeProposesTheAnnouncementBytes();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        test_nameEqCi();
+        test_classifyQuestions();
+        test_probeProposesTheAnnouncementBytes();
+    });
 }

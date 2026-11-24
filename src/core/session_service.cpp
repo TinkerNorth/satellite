@@ -42,7 +42,7 @@ uint32_t sessionWord(const Connection& conn) {
 
 uint32_t packMotors(const RumbleReport& report) {
     return static_cast<uint32_t>(report.strongMagnitude) |
-           (static_cast<uint32_t>(report.weakMagnitude) << 16);
+           (static_cast<uint32_t>(report.weakMagnitude) << 16U);
 }
 
 void publishControllers(const Connection& conn, HotTable& table) {
@@ -146,7 +146,7 @@ void publishRxBattery(RxPad& rx, const BatteryReport& report) {
     rx.ownFlags |= RX_PAD_BATTERY;
     rx.beginWrite();
     rx.battery.store(static_cast<uint32_t>(report.level) |
-                         (static_cast<uint32_t>(report.status) << 8),
+                         (static_cast<uint32_t>(report.status) << 8U),
                      std::memory_order_relaxed);
     rx.flags.store(rx.ownFlags, std::memory_order_relaxed);
     rx.endWrite();
@@ -394,8 +394,8 @@ void SessionService::closeBusIfIdle(bool idle) {
 }
 
 uint32_t SessionService::generateUniqueToken() {
-    uint32_t token;
-    do { token = makeRandomToken(); } while (connections_.count(token));
+    uint32_t token = 0;
+    do { token = makeRandomToken(); } while (connections_.count(token) != 0U);
     return token;
 }
 
@@ -1155,7 +1155,7 @@ bool SessionService::forwardRumbleLocked(Connection& conn, Controller& ctrl,
 void SessionService::seedRumbleLocked(Controller& ctrl) {
     const uint32_t motors = hidMotors_[ctrl.serialNo].load(std::memory_order_acquire);
     ctrl.hidRumble.strongMagnitude = static_cast<uint16_t>(motors);
-    ctrl.hidRumble.weakMagnitude = static_cast<uint16_t>(motors >> 16);
+    ctrl.hidRumble.weakMagnitude = static_cast<uint16_t>(motors >> 16U);
 }
 
 void SessionService::sendSeededRumbleLocked(Connection& conn) {

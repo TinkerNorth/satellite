@@ -69,19 +69,11 @@ static void test_origin_rejects_nonloopback() {
 }
 
 int main() {
-    std::cout << "Running origin guard tests...\n\n";
-    test_host_accepts_loopback();
-    test_host_rejects_nonloopback();
-    test_origin_accepts_loopback();
-    test_origin_rejects_nonloopback();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_origin_guard", [] {
+        std::cout << "Running origin guard tests...\n\n";
+        test_host_accepts_loopback();
+        test_host_rejects_nonloopback();
+        test_origin_accepts_loopback();
+        test_origin_rejects_nonloopback();
+    });
 }

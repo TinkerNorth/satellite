@@ -2,7 +2,7 @@
 
 // Keeps the active controller database: the bundled copy, or the cached
 // download when it is newer, and the check that fetches a newer one from
-// dish.tinkernorth.com (docs/architecture.md "Controller database"). The
+// dish.tinkernorth.com (docs/ARCHITECTURE.md "Controller database"). The
 // decisions are pure functions below; the IO is IControllerDbPort.
 //
 // Thread model: checkNow() runs on the caller's thread; start() spawns one

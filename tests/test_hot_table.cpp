@@ -328,26 +328,18 @@ void test_slot_keyRoundTrip() {
 } // namespace
 
 int main() {
-    test_seqlock_readerFailsDuringWriteAndSucceedsAfter();
-    test_seqlock_readOverlappingAWriteFails();
-    test_seqlock_concurrentReaderNeverSeesAMix();
-    test_rxEpoch_parity();
-    test_rxEpoch_waitQuiescentIdleReturnsAtOnce();
-    test_rxEpoch_injectedBarrierRunsOncePerWait();
-    test_rxEpoch_waitHeldWhileAFrameIsOpen();
-    test_hotWrite_holdsTheSlotOddForItsScope();
-    test_table_findAllocatePublishRetire();
-    test_table_fullTableHasNoFreeSlot();
-    test_wordsAndAddresses();
-    test_slot_keyRoundTrip();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_hot_table", [] {
+        test_seqlock_readerFailsDuringWriteAndSucceedsAfter();
+        test_seqlock_readOverlappingAWriteFails();
+        test_seqlock_concurrentReaderNeverSeesAMix();
+        test_rxEpoch_parity();
+        test_rxEpoch_waitQuiescentIdleReturnsAtOnce();
+        test_rxEpoch_injectedBarrierRunsOncePerWait();
+        test_rxEpoch_waitHeldWhileAFrameIsOpen();
+        test_hotWrite_holdsTheSlotOddForItsScope();
+        test_table_findAllocatePublishRetire();
+        test_table_fullTableHasNoFreeSlot();
+        test_wordsAndAddresses();
+        test_slot_keyRoundTrip();
+    });
 }

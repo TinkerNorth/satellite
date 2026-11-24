@@ -64,10 +64,10 @@ static void test_successCoalescesAndIdleStaysEmpty() {
 }
 
 int main() {
-    test_refusedReleaseCanRetry();
-    test_refusedPressCanRetry();
-    test_partialBatchCommitsOnlyInsertedEvents();
-    test_successCoalescesAndIdleStaysEmpty();
-    std::cout << "Passed: " << g_pass << ", failed: " << g_fail << "\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("Passed", [] {
+        test_refusedReleaseCanRetry();
+        test_refusedPressCanRetry();
+        test_partialBatchCommitsOnlyInsertedEvents();
+        test_successCoalescesAndIdleStaysEmpty();
+    });
 }

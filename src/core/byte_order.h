@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include "core/bits.h"
+
 namespace satellite {
 
 // The wire's integers, read and written by explicit shifts so the code is the
@@ -11,49 +13,23 @@ namespace satellite {
 // reports carry, since they mirror the HID layout. Every caller guards the
 // length first; these read exactly the bytes their width names.
 
-inline uint16_t readBE16(const uint8_t* p) {
-    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1]));
-}
+inline uint16_t readBE16(const uint8_t* p) { return bits::loadBe16(p); }
 
-inline uint32_t readBE32(const uint8_t* p) {
-    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
-           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
-}
+inline uint32_t readBE32(const uint8_t* p) { return bits::loadBe32(p); }
 
-inline void writeBE16(uint8_t* p, uint16_t v) {
-    p[0] = static_cast<uint8_t>(v >> 8);
-    p[1] = static_cast<uint8_t>(v);
-}
+inline void writeBE16(uint8_t* p, uint16_t v) { bits::storeBe16(p, v); }
 
-inline void writeBE32(uint8_t* p, uint32_t v) {
-    p[0] = static_cast<uint8_t>(v >> 24);
-    p[1] = static_cast<uint8_t>(v >> 16);
-    p[2] = static_cast<uint8_t>(v >> 8);
-    p[3] = static_cast<uint8_t>(v);
-}
+inline void writeBE32(uint8_t* p, uint32_t v) { bits::storeBe32(p, v); }
 
-inline uint16_t readLE16(const uint8_t* p) {
-    return static_cast<uint16_t>(static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8));
-}
+inline uint16_t readLE16(const uint8_t* p) { return bits::loadLe16(p); }
 
-// The pad reports carry signed axes; the cast is the sign, not a narrowing.
-inline int16_t readLE16s(const uint8_t* p) { return static_cast<int16_t>(readLE16(p)); }
+// The pad reports carry signed axes: the two's-complement reading of the word.
+inline int16_t readLE16s(const uint8_t* p) { return bits::asInt16(bits::loadLe16(p)); }
 
-inline uint32_t readLE32(const uint8_t* p) {
-    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-}
+inline uint32_t readLE32(const uint8_t* p) { return bits::loadLe32(p); }
 
-inline void writeLE16(uint8_t* p, uint16_t v) {
-    p[0] = static_cast<uint8_t>(v);
-    p[1] = static_cast<uint8_t>(v >> 8);
-}
+inline void writeLE16(uint8_t* p, uint16_t v) { bits::storeLe16(p, v); }
 
-inline void writeLE32(uint8_t* p, uint32_t v) {
-    p[0] = static_cast<uint8_t>(v);
-    p[1] = static_cast<uint8_t>(v >> 8);
-    p[2] = static_cast<uint8_t>(v >> 16);
-    p[3] = static_cast<uint8_t>(v >> 24);
-}
+inline void writeLE32(uint8_t* p, uint32_t v) { bits::storeLe32(p, v); }
 
 } // namespace satellite

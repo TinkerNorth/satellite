@@ -6,6 +6,9 @@
 // UDP packet), so kept tiny and allocation-free.
 #pragma once
 
+#include "core/bits.h"
+#include "core/checked_io.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -38,20 +41,20 @@ inline uint32_t parseIPv4Nbo(const std::string& s) {
     parts[idx] = static_cast<uint8_t>(val);
     // Network byte order: leftmost octet in the low byte, so a memcpy into
     // sockaddr_in.sin_addr matches what inet_pton would have written.
-    return static_cast<uint32_t>(parts[0]) | (static_cast<uint32_t>(parts[1]) << 8) |
-           (static_cast<uint32_t>(parts[2]) << 16) | (static_cast<uint32_t>(parts[3]) << 24);
+    return static_cast<uint32_t>(parts[0]) | (static_cast<uint32_t>(parts[1]) << 8U) |
+           (static_cast<uint32_t>(parts[2]) << 16U) | (static_cast<uint32_t>(parts[3]) << 24U);
 }
 
 // Format a NETWORK-byte-order uint32 as "a.b.c.d". <=15 chars, so SSO means no
 // heap touch.
 inline std::string formatIPv4Nbo(uint32_t nbo) {
-    const uint8_t a = static_cast<uint8_t>(nbo & 0xFF);
-    const uint8_t b = static_cast<uint8_t>((nbo >> 8) & 0xFF);
-    const uint8_t c = static_cast<uint8_t>((nbo >> 16) & 0xFF);
-    const uint8_t d = static_cast<uint8_t>((nbo >> 24) & 0xFF);
+    const uint8_t a = bits::byteOf(nbo, 0U);
+    const uint8_t b = bits::byteOf(nbo, 1U);
+    const uint8_t c = bits::byteOf(nbo, 2U);
+    const uint8_t d = bits::byteOf(nbo, 3U);
     char buf[16];
-    std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
-    return std::string(buf);
+    const int written = std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
+    return io::formatted(written, buf) ? std::string(buf) : std::string();
 }
 
 } // namespace satellite

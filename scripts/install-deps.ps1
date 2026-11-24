@@ -17,19 +17,20 @@
           drift this script exists to end)
 
     Shared extras (all lanes):
-      [4] clang-format 22.1.4 via pip, the same pin every CI lane uses
+      [4] Python 3, which scripts/tools.sh uses to install the pinned
+          clang-format the first time the format gate runs
       [5] Kitware CMake (presets + ctest driver outside the MSYS2 shell)
-      [6] Inno Setup 6 (scripts/build-installer.ps1)
+      [6] Inno Setup, the version scripts/install-inno-setup.ps1 pins
       [7] .NET SDK 10 (dotnet publish of helper\hidmaestro)
       [8] LLVM (clang-tidy) + Cppcheck, the documented code-quality extras.
-          Note: LLVM also ships a floating clang-format; the pinned pip
-          22.1.4 is the one the format gate trusts.
+          Note: LLVM also ships a floating clang-format; the format gate
+          uses the one scripts/tools.sh pins, never the one on PATH.
 
     -Msvc additionally bootstraps the hardened lane windows-msvc-ci.yml and
     release.yml build (MSVC + vcpkg, CFG + CET + Spectre):
       * VS 2022 Build Tools with the C++ x64 toolset (winget, if no VS found)
-      * a vcpkg checkout at %USERPROFILE%\vcpkg (git clone + bootstrap, if
-        VCPKG_ROOT is not already set)
+      * a vcpkg checkout at vcpkg.json's builtin-baseline
+        (scripts/setup-vcpkg.ps1; VCPKG_ROOT, or %USERPROFILE%\vcpkg-baseline)
 
     NOT installed (runtime-only): the ViGEmBus driver. Grab it from
     https://github.com/nefarius/ViGEmBus/releases to run the receiver. The
@@ -116,36 +117,21 @@ Step '[3/8] PATH: mingw64 in, ucrt64 out'
 Add-UserPathEntry $mingwBin
 Remove-UserPathEntry $ucrtBin
 
-Step '[4/8] clang-format 22.1.4 (pip; the pin every CI lane uses)'
+Step '[4/8] Python 3 (scripts/tools.sh installs the pinned clang-format into a venv)'
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Invoke-Winget 'Python.Python.3.12'
 }
-if (Get-Command python -ErrorAction SilentlyContinue) {
-    & python -m pip install --upgrade pip
-    & python -m pip install 'clang-format==22.1.4'
-    if ($LASTEXITCODE -ne 0) { Write-Error 'pip could not install clang-format==22.1.4' }
-} else {
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Output '[WARN] python still not on PATH (fresh install needs a new terminal).'
-    Write-Output '       Re-run this script from a new terminal, or run: python -m pip install clang-format==22.1.4'
 }
 
 Step '[5/8] CMake (Kitware; drives the presets outside the MSYS2 shell)'
 Invoke-Winget 'Kitware.CMake'
 
-Step '[6/8] Inno Setup 6 (scripts/build-installer.ps1)'
-Invoke-Winget 'JRSoftware.InnoSetup'
-# Inno Setup may install per-user (winget default) or per-machine; the
-# per-user install does not add itself to PATH.
-$isccDir = @(
-    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6'),
-    (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6'),
-    (Join-Path $env:ProgramFiles 'Inno Setup 6')
-) | Where-Object { Test-Path (Join-Path $_ 'ISCC.exe') } | Select-Object -First 1
-if ($isccDir) {
-    Add-UserPathEntry $isccDir
-} else {
-    Write-Output '[WARN] ISCC.exe not found in standard Inno Setup locations (fresh install may need a new terminal).'
-}
+Step '[6/8] Inno Setup (the version scripts/install-inno-setup.ps1 pins, as CI)'
+$iscc = & (Join-Path $PSScriptRoot 'install-inno-setup.ps1')
+if ($LASTEXITCODE -ne 0 -or -not $iscc) { Write-Error 'scripts/install-inno-setup.ps1 failed' }
+Add-UserPathEntry (Split-Path -Parent $iscc)
 
 Step '[7/8] .NET SDK 10 (HIDMaestro helper build)'
 Invoke-Winget 'Microsoft.DotNet.SDK.10'
@@ -171,22 +157,12 @@ if ($Msvc) {
     }
 
     Step '[MSVC lane] vcpkg (dependency manifest: vcpkg.json)'
-    if ($env:VCPKG_ROOT -and (Test-Path (Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'))) {
-        Write-Output "[OK]  VCPKG_ROOT already points at $env:VCPKG_ROOT"
-    } else {
-        $vcpkgRoot = Join-Path $env:USERPROFILE 'vcpkg'
-        if (-not (Test-Path (Join-Path $vcpkgRoot 'scripts\buildsystems\vcpkg.cmake'))) {
-            if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-                Write-Error 'git is required to clone vcpkg. Install git, or set VCPKG_ROOT to an existing checkout.'
-            }
-            & git clone https://github.com/microsoft/vcpkg $vcpkgRoot
-            if ($LASTEXITCODE -ne 0) { Write-Error 'git clone of vcpkg failed' }
-            & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
-            if ($LASTEXITCODE -ne 0) { Write-Error 'vcpkg bootstrap failed' }
-        }
-        [Environment]::SetEnvironmentVariable('VCPKG_ROOT', $vcpkgRoot, 'User')
-        Write-Output "[OK]  vcpkg at $vcpkgRoot; VCPKG_ROOT set in the user environment (new terminal to pick it up)"
-    }
+    # The checkout vcpkg.json's builtin-baseline names, the one CI uses.
+    $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { Join-Path $env:USERPROFILE 'vcpkg-baseline' }
+    & (Join-Path $PSScriptRoot 'setup-vcpkg.ps1') -Destination $vcpkgRoot
+    if (-not $?) { Write-Error 'scripts/setup-vcpkg.ps1 failed' }
+    [Environment]::SetEnvironmentVariable('VCPKG_ROOT', $vcpkgRoot, 'User')
+    Write-Output "[OK]  vcpkg at $vcpkgRoot; VCPKG_ROOT set in the user environment (new terminal to pick it up)"
     Write-Output ''
     Write-Output 'MSVC lane ready: scripts/build.ps1 -Msvc (dependencies build from vcpkg.json on first configure).'
 }

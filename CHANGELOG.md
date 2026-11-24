@@ -3,6 +3,129 @@
 All notable connection-model and protocol changes are recorded here.
 The protocol itself is specified in [`docs/contract.md`](docs/contract.md).
 
+## [Unreleased]
+
+## 2.4.0
+
+Arch and Fedora users can install Satellite from its repositories again, and
+every pin is at its latest release. No protocol change.
+
+### Fixed
+
+- The Arch package from Satellite's pacman repository shipped an AppImage
+  that could not start: makepkg's strip step cut the squashfs image off the
+  AppImage runtime, so `satellite-bin` 2.3.0 (946,553 bytes installed)
+  carried the runtime alone instead of the 16,931,320-byte AppImage, and a needless
+  `satellite-bin-debug` package was built beside it. The PKGBUILD now sets
+  `options=('!strip' '!debug')`, publishing builds the package with
+  `scripts/build-arch-package.sh`, and every pull request installs the
+  package from a signed repository in an Arch container and fails unless the
+  installed AppImage is byte for byte the packaged one and starts.
+- The DNF repository refused to install 2.3.0: its `.repo` file checks
+  package signatures (`gpgcheck=1`) and the repository's rpm was unsigned, so
+  `dnf install satellite` stopped at "The package is not signed". The
+  publishing script now signs every rpm it adds with the repository key, and
+  every pull request builds the DNF and APT repositories with a throwaway key
+  and installs Satellite from them with every signature check on. The
+  release's own `satellite-x86_64.rpm` installs directly
+  (`sudo dnf install ./satellite-x86_64.rpm`) on Fedora 42 and 44.
+- On Windows, a junction or symbolic link inside the dashboard's folder could
+  make Satellite serve a file outside it (cpp-httplib 0.67.0's fix, #2670).
+- The Linux updater told an Arch install to upgrade with `yay -Syu
+  satellite-bin`, an AUR helper command for a package the AUR does not carry;
+  it now shows `sudo pacman -Syu satellite-bin`, which upgrades it from
+  Satellite's pacman repository. The commands live in one header that a test
+  holds to `docs/PACKAGING.md`.
+- The MinGW build failed against OpenSSL 4, which returns a certificate's
+  subject name as const; the self-signed certificate now gets a name of its
+  own, which OpenSSL 3 accepts too.
+- The key file's base64 encoder kept its accumulator in an int that
+  overflowed after four bytes, which is undefined behaviour; it is unsigned
+  now and writes the same text.
+- The TLS certificate and key count as written only when closing the file
+  succeeds too, so a write the disk never took is no longer taken for a
+  certificate.
+- Hashing a downloaded update fails when the read stopped on an error
+  instead of hashing part of the file. On Linux a download whose file could
+  not be written is an error rather than a finished download, and when a
+  failed download cannot be removed the error says where it was left.
+- On macOS, closing the virtual pad bus (which the adapter's destructor does)
+  allocated memory, so an allocation failure there would have ended the
+  process; it allocates nothing now. A pairing request whose device id is
+  not UTF-8 is no longer handed to a notification that cannot carry it.
+
+### Changed
+
+cpp-httplib goes from 0.58.0 to 0.67.0. Among nine releases of fixes, the
+one that reaches Satellite directly is on Windows: a junction or symbolic
+link inside the dashboard's mount point could serve a file outside it. The
+Windows build ships the HIDMaestro 2.3.0 SDK, which embeds the same 2.1.0
+driver (2.1.0.1716), so no machine reinstalls a driver and the version check
+still verifies driver release 2.1.0; the seven profile copies are cut from
+2.3.0's catalog files. sentry-native goes to 0.17.6 in both the vcpkg overlay
+port and the Linux build; none of the 0.17.0 API changes touches a call
+Satellite makes. The MSVC lane's libsodium, OpenSSL, opus and the ports
+sentry-native pulls in are pinned by a `builtin-baseline` in `vcpkg.json`
+instead of moving with the runner image. The Flatpak template builds
+libsodium 1.0.22 and opus 1.6.1, the versions every other build ships.
+
+The tools are pinned once, by SHA-256, in `scripts/tools.sh`: clang-format
+23.1.5 (it finds nothing to change in the tree, so there is no reformat), sentry-cli 3.8.2 and linuxdeploy 1-alpha-20251107-1 (it was the
+unpinned `continuous` build). Inno Setup is installed at 6.7.4 from its
+checksum by `scripts/install-inno-setup.ps1` instead of whatever Chocolatey
+served. The `.rpm` is built on Fedora 44 (Fedora 42 reached its end of life),
+the Windows jobs run on `windows-2022`, and the macOS jobs name Xcode 16.4.
+
+The CMake presets are now `release`, `debug` and `package`, with
+`windows-mingw`, `windows-mingw-debug` and `windows-msvc` where the
+toolchain differs, and the release builds every artifact through the same
+preset and warnings-as-errors as pull requests. Work that ran only on a tag
+now runs on every pull request through the same scripts, without signing or
+publishing: the `.deb` and `.rpm` are built, installed and launched in their
+containers, the Windows installer is compiled and taken through its silent
+install round-trip, the `-DSATELLITE_UIACCESS=ON` build and its installer
+are compiled, and the macOS bundle's `.dmg` is staged, mounted and run.
+`scripts/package-in-container.sh` runs the Linux package lanes locally.
+CodeQL now blocks and uploads its results. The version check also covers the
+CHANGELOG heading, the AppStream release, the repeated pins and the facts the
+documents name (the protocol number, the C++ standard), and the release
+checks its tag against `VERSION`. `THIRD_PARTY.md` and `CODE_OF_CONDUCT.md`
+are added, and the stale documents are corrected.
+
+The security gates and the release hardening are the fleet's shared
+`_security.yml` and `_release_harden.yml`, byte-identical in every
+repository. OSV-Scanner moves to 2.7.1 and now scans the tree's manifests (the
+helper's NuGet test packages) besides the vendored components, and a scan that
+finds nothing fails; `.security/allowlist.yaml` is the only place a
+vulnerability is accepted (`osv-scanner.toml` is gone). Releases are signed
+with cosign 3.1.4: every file gets one Sigstore bundle,
+`<file>.sigstore.json`, in place of the `.sig` and `.crt` pair 2.3.0 and
+earlier carry; Grype 0.122.1 and Syft 1.57.2 run as pinned binaries. Every
+pull request runs the hardening job as a dry run over the packages and the
+installer it built. `SECURITY.md` gives the new recipe, the one for releases
+up to 2.3.0, and the provenance check with `cosign verify-blob-attestation`.
+
+Every artifact carries a components bill of materials written from its
+build (`satellite-<lane>.components.spdx.json`, `scripts/write-sbom.py`):
+the Windows installer names every vcpkg port it links, HIDMaestro, ViGEmBus
+and usbip-win2; the AppImage every library it bundles, by its Ubuntu package;
+every build the vendored cpp-httplib and nlohmann/json. The release's product
+SBOM folds them in, where it used to name nothing but Satellite, and
+`scripts/check-sbom.py` holds each to `THIRD_PARTY.md`.
+
+clang-tidy 23.1.4 is pinned in `scripts/tools.sh` and runs the fleet's
+shared `.clang-tidy` in every lane's build, test, lint and format job and in
+`scripts/ci-local.sh` and `scripts/ci-local.ps1`, over the sources that lane
+compiles; any finding fails it. Every finding it raised was fixed at its
+cause, none suppressed. Bitwise arithmetic takes unsigned operands only,
+through `src/core/bits.h` (the Dish clients' `Bits.h`), and each converted
+area was run old against new over its boundary and random inputs with
+identical results. Every test binary's main reports an uncaught exception as
+a failed test, the macOS entry point prints what was thrown before such an
+exception ends the process, and nothing built before `main` can throw. The
+stdio results are read (`src/core/checked_io.h`), the Linux tray opens the
+web UI without a shell, and the uinput node builders have no `goto`.
+
 ## 2.3.0
 
 Satellite reads the Dish fleet's controller database. It ships a copy of

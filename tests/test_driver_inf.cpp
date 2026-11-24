@@ -72,13 +72,10 @@ static void testNegatives() {
 }
 
 int main() {
-    std::cout << "Running driver INF tests...\n\n";
-    testPlainInf();
-    testEncodings();
-    testNegatives();
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_driver_inf", [] {
+        std::cout << "Running driver INF tests...\n\n";
+        testPlainInf();
+        testEncodings();
+        testNegatives();
+    });
 }

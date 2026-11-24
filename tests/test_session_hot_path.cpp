@@ -17,6 +17,25 @@
 
 namespace {
 
+// The stress runs replay the same operation order on every run, so a failure
+// reproduces: a fixed sequence, not randomness (splitmix64).
+struct SplitMix64 {
+    using result_type = uint64_t;
+    uint64_t state;
+    static constexpr uint64_t min() { return 0; }
+    static constexpr uint64_t max() { return UINT64_MAX; }
+    uint64_t operator()() {
+        uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+        z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31U);
+    }
+};
+
+} // namespace
+
+namespace {
+
 using Clock = std::chrono::steady_clock;
 
 constexpr int SESSION_COUNT = 2;
@@ -29,8 +48,13 @@ constexpr int SLOW_PLUG_PHASE = 1;
 constexpr int DONE_PHASE = 2;
 constexpr auto STRESS_SPAN = std::chrono::seconds(1);
 constexpr int SLOW_PLUGS = 4;
-constexpr int SLOW_PLUG_MS = 200;
-constexpr auto BLOCKED_CALL_LIMIT = std::chrono::milliseconds(50);
+// A slow plug holds until the steady session has submitted this many frames
+// after it began: frames that arrive during a plug prove the hot path did not
+// wait behind it, on a busy machine or an idle one. If it did wait, the plug
+// gives up at PLUG_HOLD_LIMIT and counts as starved.
+constexpr uint64_t FRAMES_DURING_PLUG = 50;
+constexpr auto PLUG_HOLD_LIMIT = std::chrono::seconds(20);
+constexpr int STEADY_TAG = 1;
 constexpr auto THREAD_TIMEOUT = std::chrono::seconds(60);
 constexpr uint32_t SENDER_IPV4 = 0x0100007fu;
 constexpr uint16_t SENDER_PORT = 40100;
@@ -52,7 +76,9 @@ int parseOwner(const std::string& name) {
 
 class OwnershipBackend : public IGamepadPort {
   public:
-    std::atomic<int> slowPlugMs{0};
+    std::atomic<bool> holdPlugs{false};
+    std::atomic<uint64_t> starvedPlugs{0};
+    std::array<std::atomic<uint64_t>, SESSION_COUNT + 1> frameSubmits{};
     std::atomic<bool> flaky{true};
     std::atomic<uint64_t> violations{0};
     std::atomic<uint64_t> plugs{0};
@@ -69,7 +95,7 @@ class OwnershipBackend : public IGamepadPort {
         for (uint32_t serial = 1; serial <= MAX_BACKEND_CONTROLLERS; serial++) {
             Serial& s = serials_[serial];
             s.busy.store(true);
-            if (s.submitting.load()) violations++;
+            if (s.submitting.load() != 0) violations++;
             s.plugged.store(false);
             s.owner.store(NO_OWNER);
             s.busy.store(false);
@@ -89,19 +115,18 @@ class OwnershipBackend : public IGamepadPort {
         Serial& s = serials_[serial];
         s.busy.store(true);
         const uint64_t plugNumber = plugNumber_.fetch_add(1) + 1;
-        plugState_.store((plugNumber << 1) | 1u);
-        if (s.submitting.load()) violations++;
+        plugState_.store((plugNumber << 1U) | 1u);
+        if (s.submitting.load() != 0) violations++;
         if (s.plugged.load()) violations++;
-        const int sleepMs = slowPlugMs.load();
-        if (sleepMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        if (holdPlugs.load()) holdUntilSteadyFrames();
         const bool ok = !flaky.load() || rng_() % PLUG_FAILURE_ONE_IN != 0;
         if (ok) {
             s.owner.store(parseOwner(preferredBackend));
             s.plugged.store(true);
             plugs++;
         }
-        if (s.submitting.load()) violations++;
-        plugState_.store(plugNumber << 1);
+        if (s.submitting.load() != 0) violations++;
+        plugState_.store(plugNumber << 1U);
         s.busy.store(false);
         return ok;
     }
@@ -110,7 +135,7 @@ class OwnershipBackend : public IGamepadPort {
         if (!valid(serial)) return true;
         Serial& s = serials_[serial];
         s.busy.store(true);
-        if (s.submitting.load()) violations++;
+        if (s.submitting.load() != 0) violations++;
         const bool confirmed = !flaky.load() || rng_() % UNPLUG_FAILURE_ONE_IN != 0;
         if (confirmed) {
             s.plugged.store(false);
@@ -118,7 +143,7 @@ class OwnershipBackend : public IGamepadPort {
         } else {
             s.owner.store(ZOMBIE_OWNER);
         }
-        if (s.submitting.load()) violations++;
+        if (s.submitting.load() != 0) violations++;
         s.busy.store(false);
         unplugs++;
         return confirmed;
@@ -129,6 +154,8 @@ class OwnershipBackend : public IGamepadPort {
     }
 
     bool submitReport(uint32_t serial, const GamepadReport& report) override {
+        const int tag = report.sThumbLX;
+        if (tag >= 1 && tag <= SESSION_COUNT) frameSubmits[static_cast<size_t>(tag)]++;
         return ownedSubmit(serial, report.sThumbLX, report.sThumbLY);
     }
 
@@ -175,6 +202,19 @@ class OwnershipBackend : public IGamepadPort {
 
     static bool valid(uint32_t serial) { return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS; }
 
+    void holdUntilSteadyFrames() {
+        std::atomic<uint64_t>& steady = frameSubmits[STEADY_TAG];
+        const uint64_t target = steady.load() + FRAMES_DURING_PLUG;
+        const auto deadline = Clock::now() + PLUG_HOLD_LIMIT;
+        while (steady.load() < target) {
+            if (Clock::now() >= deadline) {
+                starvedPlugs++;
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
     bool ownedSubmit(uint32_t serial, int tag, int ctrlIdx) {
         if (!valid(serial)) {
             violations++;
@@ -193,7 +233,7 @@ class OwnershipBackend : public IGamepadPort {
     std::atomic<bool> busOpen_{false};
     std::atomic<uint64_t> plugNumber_{0};
     std::atomic<uint64_t> plugState_{0};
-    std::mt19937 rng_{20261026u};
+    SplitMix64 rng_{20261026U};
 };
 
 struct SilentClient : IClientPort {
@@ -406,7 +446,7 @@ ControllerDescriptor descriptorFor(int tag, uint8_t idx, uint8_t type) {
     return d;
 }
 
-uint8_t randomType(std::mt19937& rng) {
+uint8_t randomType(SplitMix64& rng) {
     return rng() % 2 == 0 ? CONTROLLER_TYPE_XBOX : CONTROLLER_TYPE_PLAYSTATION;
 }
 
@@ -427,7 +467,7 @@ void upsert(SessionService& svc, SessionState& st, Shared& sh,
     sh.tokens[st.tag].store(r.token, std::memory_order_release);
 }
 
-void randomUpsert(SessionService& svc, SessionState& st, Shared& sh, std::mt19937& rng) {
+void randomUpsert(SessionService& svc, SessionState& st, Shared& sh, SplitMix64& rng) {
     std::vector<ControllerDescriptor> descriptors;
     for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
         if (rng() % 2 == 0) descriptors.push_back(descriptorFor(st.tag, idx, randomType(rng)));
@@ -435,12 +475,12 @@ void randomUpsert(SessionService& svc, SessionState& st, Shared& sh, std::mt1993
     upsert(svc, st, sh, descriptors);
 }
 
-void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, std::mt19937& rng) {
+void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, SplitMix64& rng) {
     if (st.connectionId.empty()) {
         randomUpsert(svc, st, sh, rng);
         return;
     }
-    const uint8_t idx = static_cast<uint8_t>(rng() % PADS_PER_SESSION);
+    const auto idx = static_cast<uint8_t>(rng() % PADS_PER_SESSION);
     uint16_t epoch = 0;
     switch (rng() % 6) {
     case 0:
@@ -474,6 +514,7 @@ void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, std::mt1993
 
 std::vector<ControllerDescriptor> everyPad(int tag) {
     std::vector<ControllerDescriptor> descriptors;
+    descriptors.reserve(PADS_PER_SESSION);
     for (uint8_t idx = 0; idx < PADS_PER_SESSION; idx++) {
         descriptors.push_back(descriptorFor(tag, idx, CONTROLLER_TYPE_XBOX));
     }
@@ -482,7 +523,7 @@ std::vector<ControllerDescriptor> everyPad(int tag) {
 
 void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
               std::array<SessionState, SESSION_COUNT + 1>& sessions) {
-    std::mt19937 rng(7u);
+    SplitMix64 rng{7U};
     const auto stressEnd = Clock::now() + STRESS_SPAN;
     while (Clock::now() < stressEnd) {
         const int tag = 1 + static_cast<int>(rng() % SESSION_COUNT);
@@ -507,7 +548,7 @@ void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
     upsert(svc, changing, sh, {});
 
     sh.phase.store(SLOW_PLUG_PHASE, std::memory_order_release);
-    backend.slowPlugMs.store(SLOW_PLUG_MS);
+    backend.holdPlugs.store(true);
     for (int i = 0; i < SLOW_PLUGS; i++) {
         ControllerApplyResult applied;
         uint16_t epoch = 0;
@@ -515,7 +556,7 @@ void coldLoop(SessionService& svc, OwnershipBackend& backend, Shared& sh,
         svc.applyController(changing.connectionId, changing.deviceId, desc, applied, epoch);
         svc.removeController(changing.connectionId, changing.deviceId, 0, epoch);
     }
-    backend.slowPlugMs.store(0);
+    backend.holdPlugs.store(false);
     sh.phase.store(DONE_PHASE, std::memory_order_release);
     sh.coldDone.store(true, std::memory_order_release);
 }
@@ -588,12 +629,13 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
               << sh.submits[STRESS_PHASE][1] << " B " << sh.submits[STRESS_PHASE][2]
               << ", violations " << backend.violations.load() << "\n";
 
-    TEST("hot path: a 50 ms plug for one session never blocks another session's frames");
+    TEST("hot path: a slow plug for one session never blocks another session's frames");
     EXPECT(sh.submits[SLOW_PLUG_PHASE][1] > 0);
-    EXPECT(sh.longest[SLOW_PLUG_PHASE] < BLOCKED_CALL_LIMIT);
-    std::cout << "  slow plugs: longest receive-thread call " << micros(sh.longest[SLOW_PLUG_PHASE])
-              << " us across " << SLOW_PLUGS << " plugs of " << SLOW_PLUG_MS
-              << " ms; steady session submits " << sh.submits[SLOW_PLUG_PHASE][1] << "\n";
+    EXPECT_EQ(backend.starvedPlugs.load(), 0u);
+    std::cout << "  slow plugs: " << SLOW_PLUGS << " plugs each held until " << FRAMES_DURING_PLUG
+              << " steady frames arrived, starved " << backend.starvedPlugs.load()
+              << "; longest receive-thread call " << micros(sh.longest[SLOW_PLUG_PHASE])
+              << " us (wall clock, not asserted)\n";
 
     TEST("hot path: a session's own lookups are never refused while its plug runs");
     EXPECT(sh.lookupsInPlug[SLOW_PLUG_PHASE][2] > 0);
@@ -606,15 +648,6 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
 } // namespace
 
 int main() {
-    test_hotPath_coldOperationsNeverCrossFrames();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_session_hot_path",
+                                    [] { test_hotPath_coldOperationsNeverCrossFrames(); });
 }

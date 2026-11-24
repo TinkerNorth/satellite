@@ -15,23 +15,7 @@
 #include <utility>
 #include <vector>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 struct MockUpdater : IUpdaterPort {
     // Fetch knobs.
@@ -83,14 +67,14 @@ struct MockUpdater : IUpdaterPort {
                           std::string& outError) override {
         downloadCalls++;
         calls += "download ";
-        if (cancel && cancel->load()) {
+        if ((cancel != nullptr) && cancel->load()) {
             outError = "cancelled";
             return false;
         }
         if (blockDownloadUntilCancel) {
             onProgress(assetSize / 2, assetSize);
             for (int i = 0; i < 3000; i++) {
-                if (cancel && cancel->load()) {
+                if ((cancel != nullptr) && cancel->load()) {
                     outError = "cancelled";
                     return false;
                 }
@@ -1752,101 +1736,93 @@ static void test_progressWorthBroadcasting() {
 
     TEST("progress: with no size, every quarter megabyte is worth one");
     EXPECT(!progressWorthBroadcasting(0, 0, 256 * 1024 - 1, 0));
-    EXPECT(progressWorthBroadcasting(0, 0, 256 * 1024, 0));
-    EXPECT(!progressWorthBroadcasting(256 * 1024, 0, 256 * 1024 + 100, 0));
+    EXPECT(progressWorthBroadcasting(0, 0, uint64_t{256} * 1024, 0));
+    EXPECT(!progressWorthBroadcasting(uint64_t{256} * 1024, 0, uint64_t{256} * 1024 + 100, 0));
 }
 
 int main() {
-    std::cout << "Running update_service tests...\n\n";
-    test_progressWorthBroadcasting();
-    test_semver_compare();
-    test_semver_prerelease();
-    test_semver_malformed();
-    test_check_finds_update();
-    test_check_up_to_date();
-    test_check_network_error();
-    test_check_skip_version_suppresses();
-    test_full_install_flow();
-    test_download_failure();
-    test_verify_failure();
-    test_cancel_settles_a_running_download_back_at_the_offer();
-    test_cancel_drops_a_queued_download();
-    test_cancel_drops_a_queued_repair_back_to_idle();
-    test_cancel_settles_a_running_repair_at_idle();
-    test_manual_method_does_not_download();
-    test_download_queued_before_skip_settles_without_relocking();
-    test_repair_ignores_manual_install_hosts();
-    test_auto_download_and_install_chain();
-    test_update_preferences_persists();
-    test_skip_version_clears_available();
-    test_dismiss_keeps_an_available_update_on_offer();
-    test_dismiss_keeps_a_downloaded_update_staged();
-    test_dismiss_elsewhere_changes_nothing();
-    test_a_check_that_fetched_clears_the_dismissal();
-    test_an_accepted_download_or_repair_clears_the_dismissal();
-    test_a_download_after_a_dismissal_lands_undismissed();
-    test_an_accepted_install_clears_the_dismissal();
-    test_check_is_visible_before_the_worker_runs_it();
-    test_check_after_an_error_drops_it_at_once();
-    test_download_is_visible_before_the_worker_runs_it();
-    test_repair_of_a_known_release_is_visible_at_once();
-    test_repair_with_no_known_release_is_visible_at_once();
-    test_install_is_visible_at_once();
-    test_check_is_rejected_while_work_is_queued();
-    test_requests_outside_their_states_change_nothing();
-    test_requests_do_not_broadcast();
-    test_install_queued_before_skip_never_runs();
-    test_retry_after_a_failed_download_or_verify_downloads_again();
-    test_retry_after_a_failed_repair_repairs_again();
-    test_retry_after_a_failed_check_checks_again_as_the_user();
-    test_check_is_accepted_while_downloaded();
-    test_a_check_that_finds_the_staged_release_keeps_it();
-    test_a_check_that_finds_the_staged_repair_keeps_it();
-    test_a_check_that_finds_a_rebuilt_asset_offers_it_afresh();
-    test_a_failed_background_check_returns_to_downloaded();
-    test_a_failed_user_check_keeps_the_staged_installer_for_the_next_check();
-    test_a_check_after_a_failed_install_keeps_the_installer_reachable();
-    test_a_user_check_right_after_a_repair_check_keeps_the_repair_staged();
-    test_a_new_download_supersedes_the_staged_installer();
-    test_skipping_the_staged_release_forgets_its_installer();
-    test_a_repair_whose_check_finds_the_staged_installer_keeps_it();
-    test_an_install_accepted_after_a_repair_check_ends_the_repair();
-    test_a_repair_joins_a_queued_background_check();
-    test_a_repair_joins_a_running_background_check();
-    test_a_failed_check_under_a_joined_repair_reports_the_error();
-    test_a_repair_joined_to_a_check_clears_the_dismissal();
-    test_a_repair_on_a_package_managed_host_does_not_join_a_check();
-    test_an_install_that_fails_after_a_skip_leaves_the_skip_alone();
-    test_a_skip_during_a_download_stops_it_before_verify();
-    test_a_download_that_fails_after_a_skip_leaves_the_skip_alone();
-    test_a_skip_during_verify_leaves_nothing_staged();
-    test_a_verify_that_fails_after_a_skip_leaves_the_skip_alone();
-    test_a_check_overtaken_by_a_skip_settles_nothing();
-    test_a_failing_check_overtaken_by_a_skip_writes_no_error();
-    test_a_check_overtaken_by_a_skip_and_a_new_check_broadcasts_no_stale_offer();
-    test_a_check_overtaken_by_a_skip_and_a_new_check_lets_no_download_in();
-    test_a_check_taken_after_a_skip_is_checking_from_the_take();
-    test_a_download_cancelled_after_a_skip_and_a_new_check_leaves_the_check_alone();
-    test_a_queued_download_overtaken_by_a_skip_and_a_check_gives_way();
-    test_auto_install_is_not_skipped_by_a_check_at_verify();
-    test_a_failed_background_check_keeps_the_known_update();
-    test_a_failed_user_check_still_reports_the_error();
-    test_a_failed_background_check_with_nothing_known_reports_the_error();
-    test_a_failed_background_check_starts_no_auto_download();
-    test_a_user_check_folded_into_a_queued_background_check_shows_its_failure();
-    test_a_user_check_during_a_running_background_check_shows_its_failure();
-    test_a_failed_install_relaunches_the_staged_installer();
-    test_install_after_a_failed_verify_is_rejected();
-    test_broadcasts_carry_the_failed_phase();
-    test_broadcasts_carry_the_dismissal();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_update_service", [] {
+        std::cout << "Running update_service tests...\n\n";
+        test_progressWorthBroadcasting();
+        test_semver_compare();
+        test_semver_prerelease();
+        test_semver_malformed();
+        test_check_finds_update();
+        test_check_up_to_date();
+        test_check_network_error();
+        test_check_skip_version_suppresses();
+        test_full_install_flow();
+        test_download_failure();
+        test_verify_failure();
+        test_cancel_settles_a_running_download_back_at_the_offer();
+        test_cancel_drops_a_queued_download();
+        test_cancel_drops_a_queued_repair_back_to_idle();
+        test_cancel_settles_a_running_repair_at_idle();
+        test_manual_method_does_not_download();
+        test_download_queued_before_skip_settles_without_relocking();
+        test_repair_ignores_manual_install_hosts();
+        test_auto_download_and_install_chain();
+        test_update_preferences_persists();
+        test_skip_version_clears_available();
+        test_dismiss_keeps_an_available_update_on_offer();
+        test_dismiss_keeps_a_downloaded_update_staged();
+        test_dismiss_elsewhere_changes_nothing();
+        test_a_check_that_fetched_clears_the_dismissal();
+        test_an_accepted_download_or_repair_clears_the_dismissal();
+        test_a_download_after_a_dismissal_lands_undismissed();
+        test_an_accepted_install_clears_the_dismissal();
+        test_check_is_visible_before_the_worker_runs_it();
+        test_check_after_an_error_drops_it_at_once();
+        test_download_is_visible_before_the_worker_runs_it();
+        test_repair_of_a_known_release_is_visible_at_once();
+        test_repair_with_no_known_release_is_visible_at_once();
+        test_install_is_visible_at_once();
+        test_check_is_rejected_while_work_is_queued();
+        test_requests_outside_their_states_change_nothing();
+        test_requests_do_not_broadcast();
+        test_install_queued_before_skip_never_runs();
+        test_retry_after_a_failed_download_or_verify_downloads_again();
+        test_retry_after_a_failed_repair_repairs_again();
+        test_retry_after_a_failed_check_checks_again_as_the_user();
+        test_check_is_accepted_while_downloaded();
+        test_a_check_that_finds_the_staged_release_keeps_it();
+        test_a_check_that_finds_the_staged_repair_keeps_it();
+        test_a_check_that_finds_a_rebuilt_asset_offers_it_afresh();
+        test_a_failed_background_check_returns_to_downloaded();
+        test_a_failed_user_check_keeps_the_staged_installer_for_the_next_check();
+        test_a_check_after_a_failed_install_keeps_the_installer_reachable();
+        test_a_user_check_right_after_a_repair_check_keeps_the_repair_staged();
+        test_a_new_download_supersedes_the_staged_installer();
+        test_skipping_the_staged_release_forgets_its_installer();
+        test_a_repair_whose_check_finds_the_staged_installer_keeps_it();
+        test_an_install_accepted_after_a_repair_check_ends_the_repair();
+        test_a_repair_joins_a_queued_background_check();
+        test_a_repair_joins_a_running_background_check();
+        test_a_failed_check_under_a_joined_repair_reports_the_error();
+        test_a_repair_joined_to_a_check_clears_the_dismissal();
+        test_a_repair_on_a_package_managed_host_does_not_join_a_check();
+        test_an_install_that_fails_after_a_skip_leaves_the_skip_alone();
+        test_a_skip_during_a_download_stops_it_before_verify();
+        test_a_download_that_fails_after_a_skip_leaves_the_skip_alone();
+        test_a_skip_during_verify_leaves_nothing_staged();
+        test_a_verify_that_fails_after_a_skip_leaves_the_skip_alone();
+        test_a_check_overtaken_by_a_skip_settles_nothing();
+        test_a_failing_check_overtaken_by_a_skip_writes_no_error();
+        test_a_check_overtaken_by_a_skip_and_a_new_check_broadcasts_no_stale_offer();
+        test_a_check_overtaken_by_a_skip_and_a_new_check_lets_no_download_in();
+        test_a_check_taken_after_a_skip_is_checking_from_the_take();
+        test_a_download_cancelled_after_a_skip_and_a_new_check_leaves_the_check_alone();
+        test_a_queued_download_overtaken_by_a_skip_and_a_check_gives_way();
+        test_auto_install_is_not_skipped_by_a_check_at_verify();
+        test_a_failed_background_check_keeps_the_known_update();
+        test_a_failed_user_check_still_reports_the_error();
+        test_a_failed_background_check_with_nothing_known_reports_the_error();
+        test_a_failed_background_check_starts_no_auto_download();
+        test_a_user_check_folded_into_a_queued_background_check_shows_its_failure();
+        test_a_user_check_during_a_running_background_check_shows_its_failure();
+        test_a_failed_install_relaunches_the_staged_installer();
+        test_install_after_a_failed_verify_is_rejected();
+        test_broadcasts_carry_the_failed_phase();
+        test_broadcasts_carry_the_dismissal();
+    });
 }

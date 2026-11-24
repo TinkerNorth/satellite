@@ -315,8 +315,9 @@ static void onMenuCommand(HWND hwnd, UINT cmd) {
 static void onEndSession(WPARAM wp, LPARAM lp) {
     if (!wp) return;
     logMsg(LogLevel::INFO, "app",
-           (lp & ENDSESSION_CLOSEAPP) != 0 ? "Shutting down: Restart Manager close request"
-                                           : "Shutting down: session ending");
+           (static_cast<ULONG_PTR>(lp) & static_cast<ULONG_PTR>(ENDSESSION_CLOSEAPP)) != 0U
+               ? "Shutting down: Restart Manager close request"
+               : "Shutting down: session ending");
     lifecycle::flushFileLog(lifecycle::kLogFlushTimeoutMs);
     g_appRunning = false;
     removeTrayIcon();

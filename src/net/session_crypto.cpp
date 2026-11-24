@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "session_crypto.h"
+#include "core/bits.h"
 
 #include <sodium.h>
 
 #include <cstring>
+
+namespace bits = satellite::bits;
 
 namespace {
 
@@ -34,9 +37,9 @@ void deriveSessionKey(const uint8_t pairingKey[CRYPTO_KEY_SIZE],
     static const char infoLabel[] = "satellite-session-v1";
     uint8_t info[sizeof(infoLabel) - 1 + 4 + 1];
     std::memcpy(info, infoLabel, sizeof(infoLabel) - 1);
-    info[sizeof(infoLabel) - 1 + 0] = (uint8_t)(token >> 24);
-    info[sizeof(infoLabel) - 1 + 1] = (uint8_t)(token >> 16);
-    info[sizeof(infoLabel) - 1 + 2] = (uint8_t)(token >> 8);
+    info[sizeof(infoLabel) - 1 + 0] = (uint8_t)(token >> 24U);
+    info[sizeof(infoLabel) - 1 + 1] = (uint8_t)(token >> 16U);
+    info[sizeof(infoLabel) - 1 + 2] = (uint8_t)(token >> 8U);
     info[sizeof(infoLabel) - 1 + 3] = (uint8_t)(token);
     info[sizeof(infoLabel) - 1 + 4] = 0x01;
 
@@ -57,18 +60,18 @@ std::string computeHmacProof(const uint8_t pairingKey[CRYPTO_KEY_SIZE],
     char hex[crypto_auth_hmacsha256_BYTES * 2 + 1];
     sodium_bin2hex(hex, sizeof(hex), mac, sizeof(mac));
     sodium_memzero(mac, sizeof(mac));
-    return std::string(hex);
+    return {hex};
 }
 
 bool verifyHmacProof(const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::string& deviceId,
                      const std::string& proofHex) {
-    if (proofHex.size() != crypto_auth_hmacsha256_BYTES * 2) return false;
+    if (proofHex.size() != size_t{crypto_auth_hmacsha256_BYTES} * 2) return false;
     uint8_t supplied[crypto_auth_hmacsha256_BYTES];
     for (size_t i = 0; i < sizeof(supplied); i++) {
         int hi = hexNibbleAt(proofHex[i * 2]);
         int lo = hexNibbleAt(proofHex[i * 2 + 1]);
         if (hi < 0 || lo < 0) return false;
-        supplied[i] = static_cast<uint8_t>((hi << 4) | lo);
+        supplied[i] = bits::fromNibbles(static_cast<uint8_t>(hi), static_cast<uint8_t>(lo));
     }
     const std::string msg = "satellite-proof:" + deviceId;
     uint8_t expected[crypto_auth_hmacsha256_BYTES];
@@ -85,13 +88,13 @@ void buildNonceAndAad(uint8_t direction, uint32_t counter, uint32_t token,
                       uint8_t nonce[CRYPTO_NONCE_SIZE], uint8_t aad[4]) {
     std::memset(nonce, 0, CRYPTO_NONCE_SIZE);
     nonce[0] = direction;
-    nonce[8] = (uint8_t)(counter >> 24);
-    nonce[9] = (uint8_t)(counter >> 16);
-    nonce[10] = (uint8_t)(counter >> 8);
+    nonce[8] = (uint8_t)(counter >> 24U);
+    nonce[9] = (uint8_t)(counter >> 16U);
+    nonce[10] = (uint8_t)(counter >> 8U);
     nonce[11] = (uint8_t)(counter);
-    aad[0] = (uint8_t)(token >> 24);
-    aad[1] = (uint8_t)(token >> 16);
-    aad[2] = (uint8_t)(token >> 8);
+    aad[0] = (uint8_t)(token >> 24U);
+    aad[1] = (uint8_t)(token >> 16U);
+    aad[2] = (uint8_t)(token >> 8U);
     aad[3] = (uint8_t)(token);
 }
 

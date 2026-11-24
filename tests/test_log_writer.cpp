@@ -43,7 +43,7 @@ constexpr milliseconds PROMPTLY{2000};
 constexpr LogWriterTiming DROWSY{milliseconds(5000), milliseconds(1000)};
 constexpr size_t NOT_FOUND = static_cast<size_t>(-1);
 
-enum class Call { Write, Flush, Rotate, Purge };
+enum class Call : uint8_t { Write, Flush, Rotate, Purge };
 
 struct SinkCall {
     Call call = Call::Write;
@@ -238,7 +238,7 @@ std::string localStamp(int64_t seconds) {
 #endif
     char stamp[32];
     const size_t n = std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &tm);
-    return std::string(stamp, n);
+    return {stamp, n};
 }
 
 void testLineFormat() {
@@ -580,21 +580,20 @@ void testRingNumbering() {
 } // namespace
 
 int main() {
-    testLineFormat();
-    testWarnWakesAndBatches();
-    testErrFlushesAtOnce();
-    testInfoWithinTheWindow();
-    testIntervalFlush();
-    testDropsInOrder();
-    testOneDropReadsAsOne();
-    testFlushMeansFlushed();
-    testFlushOnABlockedSink();
-    testFailedWrite();
-    testRotationAndRetention();
-    testStopDrains();
-    testRingOnlyRecords();
-    testRingNumbering();
-
-    std::cout << "test_log_writer: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_log_writer", [] {
+        testLineFormat();
+        testWarnWakesAndBatches();
+        testErrFlushesAtOnce();
+        testInfoWithinTheWindow();
+        testIntervalFlush();
+        testDropsInOrder();
+        testOneDropReadsAsOne();
+        testFlushMeansFlushed();
+        testFlushOnABlockedSink();
+        testFailedWrite();
+        testRotationAndRetention();
+        testStopDrains();
+        testRingOnlyRecords();
+        testRingNumbering();
+    });
 }

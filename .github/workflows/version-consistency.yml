@@ -1,132 +1,37 @@
-name: version-consistency
+name: Version consistency
 
-# Fail the build if the three version sources of truth drift apart.
-#
-# /VERSION            read by CMake (MACOSX_BUNDLE_*, CPACK_PACKAGE_*) and by
-#                     installer.iss at preprocess time.
-# src/core/version.h  read by C++ and by satellite.rc (via the windres
-#                     preprocessor). Defines SATELLITE_VERSION_STRING /
-#                     SATELLITE_VERSION_MAJOR / _MINOR / _PATCH.
-# installer.iss       auto-derives MyAppVersion from /VERSION via Inno Setup's
-#                     #FileOpen / #FileRead, so it's covered transitively; we
-#                     just sanity-check the Inno preprocessor line stayed put.
-# vcpkg.json          the MSVC lane's manifest carries its own "version";
-#                     vcpkg does not read /VERSION, so it drifts silently
-#                     without this check (it sat at 1.0.0 through 1.1.0).
-#
-# Bundled-driver pins: src/platform/windows/driver_pins.h is what the
-# dashboard's driver banner compares installed drivers against, and
-# installer.iss carries the same ViGEmBus / HIDMaestro versions for the
-# payload it ships. They must agree. Each driver carries two numbers: the
-# release/installer version (ViGEmBus 1.22.0, HIDMaestro SDK 2.1.0) and the
-# driver binary's own (ViGEmBus.sys 1.21.442.0, HIDMaestro INF 2.1.0.1716).
-# The banner compares the binary's, so both pairs are pinned and checked.
-#
-# A PR-time text-consistency gate, not a full re-build.
+# Fails the pull request when a fact written in more than one place drifts:
+# the version and its mirrors, the CHANGELOG heading for it, the bundled
+# driver pins, the tool and dependency pins repeated across files, and the
+# protocol number and C++ standard the documents name. The checks live in
+# scripts/check-version-consistency.sh (its header lists them), which
+# scripts/ci-local.sh and release.yml (against the tag) run too. It reads
+# the whole tree, so it runs on every pull request rather than on a path
+# list that would miss a newly repeated pin.
 
 on:
   pull_request:
-    paths:
-      - "VERSION"
-      - "src/core/version.h"
-      - "src/platform/windows/driver_pins.h"
-      - "installer.iss"
-      - "vcpkg.json"
-      - ".github/workflows/version-consistency.yml"
+    branches: [main]
   push:
     branches: [main]
-    paths:
-      - "VERSION"
-      - "src/core/version.h"
-      - "src/platform/windows/driver_pins.h"
-      - "installer.iss"
-      - "vcpkg.json"
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
-    name: VERSION ↔ src/core/version.h ↔ installer.iss ↔ vcpkg.json
+    name: Version, pins and documented facts agree
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Compare version sources
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f VERSION ]; then
-            echo "::error::/VERSION is missing; it's the authoritative version string."
-            exit 1
-          fi
-          ver=$(tr -d '[:space:]' < VERSION)
-          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::VERSION content '$ver' is not in MAJOR.MINOR.PATCH form."
-            exit 1
-          fi
-          IFS='.' read -r major minor patch <<<"$ver"
-          echo "VERSION = $ver (major=$major minor=$minor patch=$patch)"
-
-          # ── src/core/version.h ─────────────────────────────────────────
-          h_major=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_MAJOR' src/core/version.h | awk '{print $3}')
-          h_minor=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_MINOR' src/core/version.h | awk '{print $3}')
-          h_patch=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_PATCH' src/core/version.h | awk '{print $3}')
-          h_string=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_STRING' src/core/version.h | sed -E 's/.*"([^"]+)".*/\1/')
-          h_comma=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_COMMA' src/core/version.h | sed -E 's/[^0-9,]//g')
-          h_dotted=$(grep -E '^[[:space:]]*#define[[:space:]]+SATELLITE_VERSION_DOTTED' src/core/version.h | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "version.h MAJOR=$h_major MINOR=$h_minor PATCH=$h_patch STRING=$h_string COMMA=$h_comma DOTTED=$h_dotted"
-
-          expected_comma="$major,$minor,$patch,0"
-          expected_dotted="$major.$minor.$patch.0"
-
-          fail=0
-          [ "$h_major"  = "$major"           ] || { echo "::error::SATELLITE_VERSION_MAJOR=$h_major, expected $major";   fail=1; }
-          [ "$h_minor"  = "$minor"           ] || { echo "::error::SATELLITE_VERSION_MINOR=$h_minor, expected $minor";   fail=1; }
-          [ "$h_patch"  = "$patch"           ] || { echo "::error::SATELLITE_VERSION_PATCH=$h_patch, expected $patch";   fail=1; }
-          [ "$h_string" = "$ver"             ] || { echo "::error::SATELLITE_VERSION_STRING=$h_string, expected $ver";   fail=1; }
-          [ "$h_comma"  = "$expected_comma"  ] || { echo "::error::SATELLITE_VERSION_COMMA=$h_comma, expected $expected_comma"; fail=1; }
-          [ "$h_dotted" = "$expected_dotted" ] || { echo "::error::SATELLITE_VERSION_DOTTED=$h_dotted, expected $expected_dotted"; fail=1; }
-
-          # ── installer.iss ─────────────────────────────────────────────
-          # Confirm installer.iss still derives MyAppVersion from /VERSION
-          # via the Inno preprocessor (rather than a hard-coded literal that
-          # would silently outrun the rest of the world).
-          if ! grep -q 'FileOpen(SourcePath + "VERSION")' installer.iss; then
-            echo "::error::installer.iss is not reading /VERSION at preprocess time; see the #define MyAppVersion block."
-            fail=1
-          fi
-          if grep -E '^#define[[:space:]]+MyAppVersion[[:space:]]+"[0-9]' installer.iss >/dev/null; then
-            echo "::error::installer.iss has a hard-coded MyAppVersion literal; should derive from /VERSION."
-            fail=1
-          fi
-
-          # ── vcpkg.json ────────────────────────────────────────────────
-          vcpkg_ver=$(sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' vcpkg.json | head -1)
-          echo "vcpkg.json version = $vcpkg_ver"
-          [ "$vcpkg_ver" = "$ver" ] || { echo "::error::vcpkg.json version=$vcpkg_ver, expected $ver"; fail=1; }
-
-          # ── bundled driver pins ───────────────────────────────────────
-          pins=src/platform/windows/driver_pins.h
-          pin_vigem=$(grep -E '^#define[[:space:]]+SATELLITE_VIGEMBUS_BUNDLED_VERSION' "$pins" | sed -E 's/.*"([^"]+)".*/\1/')
-          pin_vigem_drv=$(grep -E '^#define[[:space:]]+SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION' "$pins" | sed -E 's/.*"([^"]+)".*/\1/')
-          pin_hm=$(grep -E '^#define[[:space:]]+SATELLITE_HIDMAESTRO_SDK_VERSION' "$pins" | sed -E 's/.*"([^"]+)".*/\1/')
-          pin_hm_drv=$(grep -E '^#define[[:space:]]+SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION' "$pins" | sed -E 's/.*"([^"]+)".*/\1/')
-          iss_vigem=$(grep -E '^#define[[:space:]]+ViGEmBusVersion' installer.iss | sed -E 's/.*"([^"]+)".*/\1/')
-          iss_vigem_drv=$(grep -E '^#define[[:space:]]+ViGEmBusDriverVersion' installer.iss | sed -E 's/.*"([^"]+)".*/\1/')
-          iss_hm=$(grep -E '^#define[[:space:]]+HmVersion' installer.iss | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "driver_pins.h vigem=$pin_vigem vigem-driver=$pin_vigem_drv hidmaestro-sdk=$pin_hm hidmaestro-driver=$pin_hm_drv; installer.iss vigem=$iss_vigem vigem-driver=$iss_vigem_drv hidmaestro=$iss_hm"
-          [ -n "$pin_vigem" ] && [ "$pin_vigem" = "$iss_vigem" ] || { echo "::error::ViGEmBus pin drift: driver_pins.h=$pin_vigem installer.iss=$iss_vigem"; fail=1; }
-          [ -n "$pin_vigem_drv" ] && [ "$pin_vigem_drv" = "$iss_vigem_drv" ] || { echo "::error::ViGEmBus driver pin drift: driver_pins.h=$pin_vigem_drv installer.iss=$iss_vigem_drv"; fail=1; }
-          [[ "$pin_vigem_drv" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "::error::SATELLITE_VIGEMBUS_BUNDLED_DRIVER_VERSION '$pin_vigem_drv' is not a dotted version"; fail=1; }
-          [ -n "$pin_hm" ] && [ "$pin_hm" = "$iss_hm" ] || { echo "::error::HIDMaestro SDK pin drift: driver_pins.h=$pin_hm installer.iss=$iss_hm"; fail=1; }
-          [[ "$pin_hm_drv" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "::error::SATELLITE_HIDMAESTRO_BUNDLED_DRIVER_VERSION '$pin_hm_drv' is not a dotted version"; fail=1; }
-
-          if [ "$fail" -ne 0 ]; then
-            echo
-            echo "::error::Version sources drifted. Bump /VERSION, src/core/version.h and vcpkg.json together; installer.iss derives automatically. Driver pins: keep src/platform/windows/driver_pins.h and the installer.iss #defines in step."
-            exit 1
-          fi
-          echo "All version sources agree on $ver."
+      - name: Compare every repeated fact with its source
+        run: bash scripts/check-version-consistency.sh

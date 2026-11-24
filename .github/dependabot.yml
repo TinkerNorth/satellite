@@ -1,16 +1,63 @@
 version: 2
 updates:
+  # One PR per week for every action bump together: the bumps are independent
+  # one-liners, and with "require branches to be up to date" on main, N
+  # separate PRs cost N full CI cycles.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
     labels:
+      - "dependencies"
       - "ci"
-    # One PR per week for every action bump together (the way dish-android's
-    # arrive): the bumps are independent one-liners, and with "require branches
-    # to be up to date" on main, N separate PRs cost N full CI cycles.
     groups:
       github-actions:
         patterns:
           - "*"
+
+  # vcpkg.json's builtin-baseline: the MSVC lane's libsodium, OpenSSL, opus
+  # and the ports sentry-native pulls in. The overlay port under vcpkg/ports
+  # is bumped by hand (see lib/VENDORED.md for the vendored code, which no
+  # ecosystem covers).
+  - package-ecosystem: "vcpkg"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      vcpkg:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The HIDMaestro helper's test project (xunit and the test SDK).
+  - package-ecosystem: "nuget"
+    directory: "/helper/hidmaestro-core.tests"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      nuget:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

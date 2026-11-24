@@ -22,9 +22,13 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr auto PROBE_LIMIT = std::chrono::milliseconds(200);
-constexpr int SLOW_PLUG_MS = 200;
 constexpr int SLOW_ROUNDS = 4;
-constexpr auto BLOCKED_CALL_LIMIT = std::chrono::milliseconds(50);
+// A slow plug holds until the stream under test has made this many calls
+// after the plug began: calls that complete during a plug prove they did not
+// wait behind it, however busy the machine. A plug that sees no progress
+// gives up at PLUG_HOLD_LIMIT and counts as starved.
+constexpr uint64_t CALLS_DURING_PLUG = 50;
+constexpr auto PLUG_HOLD_LIMIT = std::chrono::seconds(20);
 constexpr auto HELD_LOCK_TICK_LIMIT = std::chrono::milliseconds(1000);
 constexpr auto THREAD_TIMEOUT = std::chrono::seconds(60);
 constexpr uint64_t FRAMES_ON_NEW_TOKEN = 200;
@@ -132,7 +136,7 @@ class ServiceLockProbe {
     std::thread worker_;
 };
 
-enum class Lifecycle { EnsureBusOpen, CloseBus, Plug, PlugPreferring, Unplug, Count };
+enum class Lifecycle : uint8_t { EnsureBusOpen, CloseBus, Plug, PlugPreferring, Unplug, Count };
 
 const char* lifecycleName(Lifecycle call) {
     switch (call) {
@@ -269,6 +273,7 @@ void test_lifecycleCallsRunWithTheServiceLockFree() {
 
     put(svc, "dish", {padAt(0)});
     std::vector<ControllerDescriptor> full;
+    full.reserve(FULL_BUS_SECOND_SESSION_PADS);
     for (uint8_t idx = 0; idx < FULL_BUS_SECOND_SESSION_PADS; idx++) full.push_back(padAt(idx));
     put(svc, "full", full);
     EXPECT_EQ(svc.availableSlots(), 0);
@@ -292,7 +297,9 @@ void test_lifecycleCallsRunWithTheServiceLockFree() {
 
 class SlowPlugBackend : public IGamepadPort {
   public:
-    std::atomic<int> plugMs{0};
+    // The stream whose progress a plug waits for; null plugs at once.
+    std::atomic<const std::atomic<uint64_t>*> holdFor{nullptr};
+    std::atomic<uint64_t> starvedPlugs{0};
 
     bool ensureBusOpen() override {
         busOpen_.store(true);
@@ -313,11 +320,11 @@ class SlowPlugBackend : public IGamepadPort {
     bool pluginDevicePreferring(uint32_t serial, GamepadIdentity, const std::string&) override {
         if (!valid(serial)) return false;
         const uint64_t number = plugNumber_.fetch_add(1) + 1;
-        plugState_.store((number << 1) | 1u);
-        const int ms = plugMs.load();
-        if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        plugState_.store((number << 1U) | 1u);
+        const std::atomic<uint64_t>* progress = holdFor.load();
+        if (progress != nullptr) holdUntilProgress(*progress);
         plugged_[serial].store(true);
-        plugState_.store(number << 1);
+        plugState_.store(number << 1U);
         return true;
     }
 
@@ -367,6 +374,18 @@ class SlowPlugBackend : public IGamepadPort {
   private:
     static bool valid(uint32_t serial) { return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS; }
 
+    void holdUntilProgress(const std::atomic<uint64_t>& progress) {
+        const uint64_t target = progress.load() + CALLS_DURING_PLUG;
+        const auto deadline = Clock::now() + PLUG_HOLD_LIMIT;
+        while (progress.load() < target) {
+            if (Clock::now() >= deadline) {
+                starvedPlugs++;
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
     std::array<std::atomic<bool>, MAX_BACKEND_CONTROLLERS + 1> plugged_{};
     std::atomic<bool> busOpen_{false};
     std::atomic<uint64_t> plugNumber_{0};
@@ -374,6 +393,7 @@ class SlowPlugBackend : public IGamepadPort {
 };
 
 struct ColdStream {
+    std::atomic<uint64_t> progress{0};
     std::atomic<bool> stop{false};
     std::atomic<bool> started{false};
     std::atomic<bool> done{false};
@@ -391,6 +411,7 @@ void timeCall(const SlowPlugBackend& backend, ColdStream& stream, Call&& call) {
     const auto start = Clock::now();
     call();
     const auto spent = Clock::now() - start;
+    stream.progress.fetch_add(1);
     if (!SlowPlugBackend::overlapsPlug(before, backend.plugState())) return;
     stream.callsOverlappingPlug++;
     if (spent > stream.longestOverlappingPlug) stream.longestOverlappingPlug = spent;
@@ -445,9 +466,9 @@ void test_coldDispatchNeverWaitsBehindAnotherSessionsPlug() {
     const SessionUpsertResult b = put(svc, "dishB", {padAt(0)});
     EXPECT(a.ok);
     EXPECT(b.ok);
-    backend.plugMs.store(SLOW_PLUG_MS);
 
     ColdStream stream;
+    backend.holdFor.store(&stream.progress);
     std::thread receiver(streamColdDispatch, std::ref(svc), std::cref(backend), a.token,
                          std::ref(stream));
     const bool started = waitUntil(stream.started);
@@ -465,17 +486,20 @@ void test_coldDispatchNeverWaitsBehindAnotherSessionsPlug() {
 
     EXPECT(started);
     EXPECT(stream.callsOverlappingPlug > 0);
-    EXPECT(stream.longestOverlappingPlug < BLOCKED_CALL_LIMIT);
+    EXPECT_EQ(backend.starvedPlugs.load(), 0u);
     EXPECT(stream.motionAccepted > 0);
     EXPECT(stream.touchpadAccepted > 0);
     EXPECT(stream.batteryAccepted > 0);
     EXPECT(stream.heartbeats > 0);
-    std::cout << "  cold dispatch: longest call overlapping dish B's plugs "
-              << micros(stream.longestOverlappingPlug) << " us over " << stream.callsOverlappingPlug
-              << " calls (" << SLOW_ROUNDS << " plugs of " << SLOW_PLUG_MS << " ms)\n";
+    std::cout << "  cold dispatch: " << SLOW_ROUNDS << " plugs of dish B each held until "
+              << CALLS_DURING_PLUG << " calls, starved " << backend.starvedPlugs.load()
+              << "; longest overlapping call " << micros(stream.longestOverlappingPlug)
+              << " us over " << stream.callsOverlappingPlug
+              << " calls (wall clock, not asserted)\n";
 }
 
 struct HotStream {
+    std::atomic<uint64_t> progress{0};
     std::atomic<uint32_t> token{0};
     std::atomic<uint32_t> nextToken{0};
     std::atomic<uint64_t> framesOnNextToken{0};
@@ -502,6 +526,7 @@ void streamPadZero(SessionService& svc, const SlowPlugBackend& backend, HotStrea
             svc.handleGamepadDataAndUpdate(token, ++counter, SENDER_IPV4, SENDER_PORT, 0, input);
         std::atomic_thread_fence(std::memory_order_acquire);
         const uint64_t after = backend.plugState();
+        stream.progress.fetch_add(1);
         const bool onNextToken = token == expected && stream.nextToken.load() == expected;
         if (onNextToken) {
             if (!ok) stream.failuresOnNextToken++;
@@ -551,9 +576,9 @@ void test_padKeepsSubmittingThroughItsSessionsControllerPlug() {
     SessionService svc(backend, client, log);
     const SessionUpsertResult a = put(svc, "dishA", {padAt(0)});
     EXPECT(a.ok);
-    backend.plugMs.store(SLOW_PLUG_MS);
 
     HotStream stream;
+    backend.holdFor.store(&stream.progress);
     stream.token.store(a.token);
     std::thread receiver(streamPadZero, std::ref(svc), std::cref(backend), std::ref(stream));
     const bool started = waitUntil(stream.started);
@@ -569,9 +594,9 @@ void test_padKeepsSubmittingThroughItsSessionsControllerPlug() {
     EXPECT(started);
     EXPECT(stream.framesInPlug > 0);
     EXPECT_EQ(stream.failuresInPlug, 0u);
-    std::cout << "  applyController: pad 0 frames inside " << SLOW_ROUNDS << " plugs of "
-              << SLOW_PLUG_MS << " ms " << stream.framesInPlug << ", refused "
-              << stream.failuresInPlug << "\n";
+    EXPECT_EQ(backend.starvedPlugs.load(), 0u);
+    std::cout << "  applyController: pad 0 frames inside " << SLOW_ROUNDS << " held plugs "
+              << stream.framesInPlug << ", refused " << stream.failuresInPlug << "\n";
 }
 
 void test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne() {
@@ -582,9 +607,9 @@ void test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne() {
     SessionService svc(backend, client, log);
     const SessionUpsertResult a = put(svc, "dishA", {padAt(0)});
     EXPECT(a.ok);
-    backend.plugMs.store(SLOW_PLUG_MS);
 
     HotStream stream;
+    backend.holdFor.store(&stream.progress);
     stream.token.store(a.token);
     std::thread receiver(streamPadZero, std::ref(svc), std::cref(backend), std::ref(stream));
     const bool started = waitUntil(stream.started);
@@ -606,8 +631,9 @@ void test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne() {
     EXPECT(stream.framesInPlug > 0);
     EXPECT_EQ(stream.failuresInPlug, 0u);
     EXPECT_EQ(stream.failuresOnNextToken, 0u);
-    std::cout << "  PUT: old-token frames inside " << SLOW_ROUNDS << " plugs of " << SLOW_PLUG_MS
-              << " ms " << stream.framesInPlug << ", refused " << stream.failuresInPlug
+    EXPECT_EQ(backend.starvedPlugs.load(), 0u);
+    std::cout << "  PUT: old-token frames inside " << SLOW_ROUNDS << " held plugs "
+              << stream.framesInPlug << ", refused " << stream.failuresInPlug
               << "; new-token frames refused after each PUT returned " << stream.failuresOnNextToken
               << "\n";
 }
@@ -732,19 +758,11 @@ void test_aLostPadWaitsOutATopologyChangeInFlight() {
 } // namespace
 
 int main() {
-    test_lifecycleCallsRunWithTheServiceLockFree();
-    test_coldDispatchNeverWaitsBehindAnotherSessionsPlug();
-    test_padKeepsSubmittingThroughItsSessionsControllerPlug();
-    test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne();
-    test_aLostPadWaitsOutATopologyChangeInFlight();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_session_topology", [] {
+        test_lifecycleCallsRunWithTheServiceLockFree();
+        test_coldDispatchNeverWaitsBehindAnotherSessionsPlug();
+        test_padKeepsSubmittingThroughItsSessionsControllerPlug();
+        test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne();
+        test_aLostPadWaitsOutATopologyChangeInFlight();
+    });
 }

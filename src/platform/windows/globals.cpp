@@ -14,7 +14,6 @@ std::atomic<uint64_t> g_maxLoopUs{0};
 std::atomic<uint32_t> g_senderIP{0};
 satellite::SeenDevices g_seenDevices;
 HWND g_hwnd = nullptr;
-httplib::Server g_httpServer;
 httplib::Server* g_clientServer = nullptr;
 std::string g_webDir;
 UpdateService* g_updateService = nullptr;

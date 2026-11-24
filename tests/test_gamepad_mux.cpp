@@ -122,15 +122,13 @@ struct MockPort : IGamepadPort {
     bool supportsMotionForType(uint8_t) const override { return motionForType; }
     bool motionBackendOk(uint32_t) const override { return true; }
     void setRumbleCallback(RumbleCallback cb) override { rumbleCb = std::move(cb); }
-    void setLightbarCallback(LightbarCallback cb) override { lightbarCb = std::move(cb); }
-    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
-        triggerEffectsCb = std::move(cb);
+    void setLightbarCallback(const LightbarCallback& cb) override { lightbarCb = cb; }
+    void setTriggerEffectsCallback(const TriggerEffectsCallback& cb) override {
+        triggerEffectsCb = cb;
     }
-    void setPlayerLedsCallback(PlayerLedsCallback cb) override { playerLedsCb = std::move(cb); }
-    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
-        speakerAudioCb = std::move(cb);
-    }
-    void setMicLedCallback(MicLedCallback cb) override { micLedCb = std::move(cb); }
+    void setPlayerLedsCallback(const PlayerLedsCallback& cb) override { playerLedsCb = cb; }
+    void setSpeakerAudioCallback(const SpeakerAudioCallback& cb) override { speakerAudioCb = cb; }
+    void setMicLedCallback(const MicLedCallback& cb) override { micLedCb = cb; }
     bool submitMicAudioPcm(uint32_t serial, const int16_t*, size_t samples) override {
         micAudioCalls++;
         lastSerial = serial;
@@ -140,8 +138,9 @@ struct MockPort : IGamepadPort {
     std::vector<uint32_t> lostSerials() const override { return lost; }
     std::vector<SettledSerial> settledSerials() override {
         std::vector<SettledSerial> out;
-        for (const uint32_t serial : std::exchange(settled, {}))
+        for (const uint32_t serial : std::exchange(settled, {})) {
             out.push_back({serial, backendId()});
+        }
         return out;
     }
     HostDisabled hostDisabled(uint32_t serial) const override {
@@ -611,32 +610,31 @@ static void test_preferred_backend_is_a_hint_not_a_mandate() {
 }
 
 int main() {
-    test_identity_union();
-    test_backend_id_for_serial_names_the_owner();
-    test_preferred_backend_wins_when_it_can();
-    test_preferred_backend_is_a_hint_not_a_mandate();
-    test_bus_lifecycle_any_child();
-    test_plug_prefers_first_supporting_child();
-    test_plug_falls_back_when_preferred_refuses();
-    test_plug_fails_when_no_child_accepts();
-    test_plug_rejects_invalid_serials();
-    test_per_serial_routing();
-    test_input_reaches_the_owner_whole();
-    test_idle_refresh_reaches_every_child();
-    test_driver_recheck_reaches_every_child();
-    test_lost_serials_come_from_their_owners();
-    test_settled_serials_come_from_every_child();
-    test_a_disabled_device_is_asked_of_its_owner();
-    test_an_audio_persona_is_asked_of_its_owner();
-    test_unplug_clears_owner();
-    test_unplug_unconfirmed_keeps_owner();
-    test_unplug_unowned_serial_is_gone();
-    test_callbacks_fan_in();
-    test_micAudio_routesToOwner();
-    test_relative_mouse_first_supporting();
-    test_motion_for_type_follows_preference();
-    test_motion_backend_ok_owner_scoped();
-
-    std::cout << "gamepad_mux: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("gamepad_mux", [] {
+        test_identity_union();
+        test_backend_id_for_serial_names_the_owner();
+        test_preferred_backend_wins_when_it_can();
+        test_preferred_backend_is_a_hint_not_a_mandate();
+        test_bus_lifecycle_any_child();
+        test_plug_prefers_first_supporting_child();
+        test_plug_falls_back_when_preferred_refuses();
+        test_plug_fails_when_no_child_accepts();
+        test_plug_rejects_invalid_serials();
+        test_per_serial_routing();
+        test_input_reaches_the_owner_whole();
+        test_idle_refresh_reaches_every_child();
+        test_driver_recheck_reaches_every_child();
+        test_lost_serials_come_from_their_owners();
+        test_settled_serials_come_from_every_child();
+        test_a_disabled_device_is_asked_of_its_owner();
+        test_an_audio_persona_is_asked_of_its_owner();
+        test_unplug_clears_owner();
+        test_unplug_unconfirmed_keeps_owner();
+        test_unplug_unowned_serial_is_gone();
+        test_callbacks_fan_in();
+        test_micAudio_routesToOwner();
+        test_relative_mouse_first_supporting();
+        test_motion_for_type_follows_preference();
+        test_motion_backend_ok_owner_scoped();
+    });
 }

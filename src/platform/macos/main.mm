@@ -33,10 +33,14 @@
 #include "core/update_service.h"
 #include "adapters/crash_adapter.h"
 #include "core/crash_reporting.h"
+#include "core/checked_io.h"
 
 namespace crash = satellite::crash;
 
 #include <sys/stat.h>
+
+#include <cstdlib>
+#include <exception>
 
 #import <AppKit/AppKit.h>
 
@@ -47,8 +51,8 @@ namespace crash = satellite::crash;
 @implementation SatelliteAppDelegate
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
     g_appRunning = false;
-    g_httpServer.stop();
-    if (g_clientServer) g_clientServer->stop();
+    adminHttpServer().stop();
+    if (g_clientServer != nullptr) g_clientServer->stop();
     const bool saved = g_configStore->flush(std::chrono::seconds(2));
     if (!saved) {
         logMsg(LogLevel::WARN, "app", "The configuration was not saved before the app quit");
@@ -63,23 +67,25 @@ namespace crash = satellite::crash;
 // stack with the historical inert-backend behavior.
 static void logBackendAvailability() {
     if (MacHidGamepadAdapter::runtimeAvailable()) {
-        fprintf(stderr, "[satellite] macOS virtual-DualShock-4 backend available "
-                        "(IOHIDUserDevice).\n");
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] macOS virtual-DualShock-4 backend available "
+                                 "(IOHIDUserDevice).\n"));
     } else {
-        fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
-                        "(controller descriptors will apply as backendUnavailable).\n");
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] macOS stub build: virtual gamepads disabled "
+                                 "(controller descriptors will apply as backendUnavailable).\n"));
     }
 }
 
 static bool startNetwork() {
     if (netInit()) return true;
-    fprintf(stderr, "Failed to initialize network subsystem\n");
+    satellite::io::stderrWritten(std::fprintf(stderr, "Failed to initialize network subsystem\n"));
     return false;
 }
 
 static bool startCrypto() {
     if (sodiumInit()) return true;
-    fprintf(stderr, "Failed to initialize libsodium\n");
+    satellite::io::stderrWritten(std::fprintf(stderr, "Failed to initialize libsodium\n"));
     return false;
 }
 
@@ -96,7 +102,7 @@ static Config loadConfigSeedingAutostart() {
 // non-bundle / dev builds.
 static std::string resolveWebDir() {
     const std::string exeDir = getExeDir();
-    const std::string bundled = exeDir + "/../Resources/web";
+    std::string bundled = exeDir + "/../Resources/web"; // returned, so movable
     struct stat st;
     if (stat(bundled.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return bundled;
     return exeDir + "/web";
@@ -149,7 +155,7 @@ static void runApp(SatelliteAppDelegate* delegate) {
 // Long on purpose: the composition root. Every collaborator lives on this
 // stack in the order it must be constructed, and the shutdown below mirrors
 // that order; a helper per step would move the lifetimes out of sight.
-int main() {
+static int runSatellite() {
     @autoreleasepool {
         ScopedThreadRole role(ThreadRole::Gui);
         logBackendAvailability();
@@ -211,4 +217,19 @@ int main() {
         netShutdown();
     }
     return 0;
+}
+
+// The process boundary: an exception nothing below handled is still a crash,
+// so the crash reporter records it, and stderr says what was thrown first.
+int main() {
+    try {
+        return runSatellite();
+    } catch (const std::exception& e) {
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] fatal: uncaught exception: %s\n", e.what()));
+    } catch (...) {
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] fatal: uncaught non-standard exception\n"));
+    }
+    std::abort();
 }

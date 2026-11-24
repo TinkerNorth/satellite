@@ -306,6 +306,7 @@ void test_readersNeverSeeATornSnapshot() {
     std::atomic<bool> stop{false};
     ReaderTally tally;
     std::vector<std::thread> readers;
+    readers.reserve(READER_THREADS);
     for (int i = 0; i < READER_THREADS; ++i) {
         readers.emplace_back(readCounters, std::ref(store), std::cref(stop), std::ref(tally));
     }
@@ -325,6 +326,7 @@ void test_concurrentUpdatesAreNeverLost() {
     TEST("updates from several threads are all applied, none lost to a race");
     ConfigStore store(counterConfig(0), nullptr);
     std::vector<std::thread> writers;
+    writers.reserve(WRITER_THREADS);
     for (int i = 0; i < WRITER_THREADS; ++i) {
         writers.emplace_back(incrementCounter, std::ref(store), INCREMENTS_PER_WRITER);
     }
@@ -543,34 +545,26 @@ void test_theHotFieldsTakeNoLockAndASnapshotTakesOnlyTheSnapshotLock() {
 } // namespace
 
 int main() {
-    test_anOldSnapshotIsUnchangedByLaterUpdates();
-    test_updateReturnsTheSnapshotItPublished();
-    test_aNoChangeUpdatePublishesAndPersistsNothing();
-    test_aMutateMayReadTheStoreItIsUpdating();
-    test_readersNeverSeeATornSnapshot();
-    test_concurrentUpdatesAreNeverLost();
-    test_aBurstOfUpdatesIsCoalescedAndTheLastOneWins();
-    test_theSaveWaitsForTheBurstToSettleOnItsOwn();
-    test_flushReturnsOnceTheGenerationBeforeItIsPersisted();
-    test_flushGivesUpAtItsDeadlineWhilePersistIsBlocked();
-    test_anUpdateDuringASlowPersistIsPersistedNext();
-    test_aFailingPersistIsRetriedAndTheNextSaveCarriesTheLatest();
-    test_theAudioPolicyFollowsUpdates();
-    test_stopFlushesThenJoins();
-    test_destroyingTheStoreFlushesIt();
-    test_aStopThatCannotPersistGivesUpInsteadOfHanging();
+    return satellite::test::runMain("test_config_store", [] {
+        test_anOldSnapshotIsUnchangedByLaterUpdates();
+        test_updateReturnsTheSnapshotItPublished();
+        test_aNoChangeUpdatePublishesAndPersistsNothing();
+        test_aMutateMayReadTheStoreItIsUpdating();
+        test_readersNeverSeeATornSnapshot();
+        test_concurrentUpdatesAreNeverLost();
+        test_aBurstOfUpdatesIsCoalescedAndTheLastOneWins();
+        test_theSaveWaitsForTheBurstToSettleOnItsOwn();
+        test_flushReturnsOnceTheGenerationBeforeItIsPersisted();
+        test_flushGivesUpAtItsDeadlineWhilePersistIsBlocked();
+        test_anUpdateDuringASlowPersistIsPersistedNext();
+        test_aFailingPersistIsRetriedAndTheNextSaveCarriesTheLatest();
+        test_theAudioPolicyFollowsUpdates();
+        test_stopFlushesThenJoins();
+        test_destroyingTheStoreFlushesIt();
+        test_aStopThatCannotPersistGivesUpInsteadOfHanging();
 #ifdef SATELLITE_LOCK_STATS
-    test_persistRunsOnTheSaverThreadHoldingNoLock();
-    test_theHotFieldsTakeNoLockAndASnapshotTakesOnlyTheSnapshotLock();
+        test_persistRunsOnTheSaverThreadHoldingNoLock();
+        test_theHotFieldsTakeNoLockAndASnapshotTakesOnlyTheSnapshotLock();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    });
 }

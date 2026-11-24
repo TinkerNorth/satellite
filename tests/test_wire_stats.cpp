@@ -172,22 +172,14 @@ static void test_snapshotMirrorsTheCounters() {
 }
 
 int main() {
-    std::cout << "Running wire stats tests...\n\n";
-    test_resetCoversEveryCounter();
-    test_inboundTypeMapping();
-    test_inboundGamepadIsLeftToTheHotPath();
-    test_inboundRejectionSplit();
-    test_outboundTypeMapping();
-    test_peakLoopSurvivesTheWindowedRead();
-    test_snapshotMirrorsTheCounters();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_wire_stats", [] {
+        std::cout << "Running wire stats tests...\n\n";
+        test_resetCoversEveryCounter();
+        test_inboundTypeMapping();
+        test_inboundGamepadIsLeftToTheHotPath();
+        test_inboundRejectionSplit();
+        test_outboundTypeMapping();
+        test_peakLoopSurvivesTheWindowedRead();
+        test_snapshotMirrorsTheCounters();
+    });
 }

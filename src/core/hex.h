@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #pragma once
 
+#include "core/bits.h"
 #include "core/byte_order.h"
 
 #include <cstddef>
@@ -11,8 +12,8 @@
 inline constexpr char HEX_DIGITS[] = "0123456789abcdef";
 
 inline void appendHexByte(std::string& out, uint8_t byte) {
-    out.push_back(HEX_DIGITS[byte >> 4]);
-    out.push_back(HEX_DIGITS[byte & 0x0F]);
+    out.push_back(HEX_DIGITS[satellite::bits::highNibble(byte)]);
+    out.push_back(HEX_DIGITS[satellite::bits::lowNibble(byte)]);
 }
 
 inline std::string hexEncode(const uint8_t* data, size_t len) {

@@ -20,7 +20,7 @@ namespace {
 std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 std::string bundledPath(const std::string& name) {
@@ -60,7 +60,8 @@ std::string dbText(const std::vector<JsonOut>& records, long schema = 1, long db
 // The fake digest a snapshot test hands in: deterministic, and different for
 // different bytes, which is all the manifest check needs to see.
 std::string fakeSha(const std::string& bytes) {
-    return std::string(64, static_cast<char>('a' + (bytes.size() % 6)));
+    std::string digest(64, static_cast<char>('a' + (bytes.size() % 6))); // 64 copies
+    return digest;
 }
 
 struct SnapshotFixture {
@@ -353,8 +354,8 @@ static void test_manifest_parse() {
     const std::string base =
         R"({"schema":1,"dbVersion":2,"files":{"controllers.json":{"sha256":")" + sha +
         R"(","bytes":1},"strings/en.json":{"sha256":")" + sha + R"(","bytes":1})";
-    EXPECT(parseControllerDbManifest(base + R"(,"../evil":{"sha256":")" + sha + R"(","bytes":1}}})",
-                                     m) == DbParse::Ok);
+    const std::string outside = base + R"(,"../evil":{"sha256":")" + sha + R"(","bytes":1}}})";
+    EXPECT(parseControllerDbManifest(outside, m) == DbParse::Ok);
     EXPECT_EQ(m.files.size(), size_t{2});
 
     TEST("a manifest with schema other than 1 is the wrong schema");
@@ -362,18 +363,18 @@ static void test_manifest_parse() {
            DbParse::WrongSchema);
 
     TEST("a manifest without controllers.json or strings/en.json is malformed");
-    EXPECT(parseControllerDbManifest(
-               R"({"schema":1,"dbVersion":2,"files":{"controllers.json":{"sha256":")" + sha +
-                   R"(","bytes":1}}})",
-               m) == DbParse::Malformed);
+    const std::string controllersOnly =
+        R"({"schema":1,"dbVersion":2,"files":{"controllers.json":{"sha256":")" + sha +
+        R"(","bytes":1}}})";
+    EXPECT(parseControllerDbManifest(controllersOnly, m) == DbParse::Malformed);
 
     TEST("a digest that is not 64 lowercase hex digits, or bytes that are not a count, is "
          "malformed");
-    EXPECT(parseControllerDbManifest(base + R"(,"strings/de.json":{"sha256":"ABC","bytes":1}}})",
-                                     m) == DbParse::Malformed);
-    EXPECT(parseControllerDbManifest(
-               base + R"(,"strings/de.json":{"sha256":")" + sha + R"(","bytes":"1"}}})", m) ==
-           DbParse::Malformed);
+    const std::string shortDigest = base + R"(,"strings/de.json":{"sha256":"ABC","bytes":1}}})";
+    const std::string textBytes =
+        base + R"(,"strings/de.json":{"sha256":")" + sha + R"(","bytes":"1"}}})";
+    EXPECT(parseControllerDbManifest(shortDigest, m) == DbParse::Malformed);
+    EXPECT(parseControllerDbManifest(textBytes, m) == DbParse::Malformed);
 
     TEST("a manifest with no dbVersion is malformed");
     std::string unversioned = base + "}}";
@@ -413,7 +414,7 @@ static void test_snapshot_builds() {
 
     TEST("a file that does not match its manifest entry fails the snapshot");
     SnapshotFixture badFile;
-    badFile.files.files["strings/en.json"] += " ";
+    badFile.files.files["strings/en.json"] += ' ';
     EXPECT(buildControllerDbSnapshot(badFile.files, DbSource::Cache, fakeSha, snap) ==
            SnapshotBuild::BadFile);
 
@@ -541,28 +542,28 @@ static void test_mirror_manifest_lists_only_held_files() {
 }
 
 int main() {
-    test_requires_makes_a_record_inert();
-    test_mirror_manifest_lists_only_held_files();
-    test_mirror_file();
-    test_if_none_match();
-    test_bundled_copy_parses_whole();
-    test_index_resolves_usb_ids();
-    test_index_resolves_bluetooth_ids();
-    test_index_keeps_every_record_of_a_shared_id();
-    test_unknown_id_finds_nothing();
-    test_document_shape_errors();
-    test_unknown_fields_are_ignored();
-    test_record_missing_a_required_section_is_dropped();
-    test_record_with_unreadable_section_is_dropped();
-    test_issue_without_id_is_skipped();
-    test_verification_names_round_trip();
-    test_strings_parse_and_fallback();
-    test_bundled_strings_fall_back_to_en();
-    test_manifest_paths();
-    test_manifest_parse();
-    test_file_check();
-    test_snapshot_builds();
-    test_names();
-    std::cout << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_controller_db", [] {
+        test_requires_makes_a_record_inert();
+        test_mirror_manifest_lists_only_held_files();
+        test_mirror_file();
+        test_if_none_match();
+        test_bundled_copy_parses_whole();
+        test_index_resolves_usb_ids();
+        test_index_resolves_bluetooth_ids();
+        test_index_keeps_every_record_of_a_shared_id();
+        test_unknown_id_finds_nothing();
+        test_document_shape_errors();
+        test_unknown_fields_are_ignored();
+        test_record_missing_a_required_section_is_dropped();
+        test_record_with_unreadable_section_is_dropped();
+        test_issue_without_id_is_skipped();
+        test_verification_names_round_trip();
+        test_strings_parse_and_fallback();
+        test_bundled_strings_fall_back_to_en();
+        test_manifest_paths();
+        test_manifest_parse();
+        test_file_check();
+        test_snapshot_builds();
+        test_names();
+    });
 }

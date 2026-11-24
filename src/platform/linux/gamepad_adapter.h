@@ -54,7 +54,7 @@ class GamepadAdapter : public IGamepadPort {
     // uinput has no RGB readback (EV_LED is single-bit), so this rarely fires.
     // The wrapper mirrors any fired colour to the sysfs-proxy lightbar file;
     // wiring matches the Windows ViGEm path for a future bridge.
-    void setLightbarCallback(LightbarCallback cb) override;
+    void setLightbarCallback(const LightbarCallback& cb) override;
 
 #ifdef SATELLITE_BUILD_TESTS
     // Drives the lightbar callback synthetically since uinput has no RGB readback

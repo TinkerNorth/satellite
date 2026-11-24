@@ -4,9 +4,10 @@
     signed UIAccess variant with -UiAccess)
 
 .DESCRIPTION
-    The seven steps release.yml's windows job runs, minus the CI-only signing
-    path (locally, scripts/sign.ps1 gates itself on the SATELLITE_SIGN_* /
-    CLOUD_SIGN_TOOL environment variables and is skipped when none are set):
+    The seven steps release.yml's windows job runs (it calls this script),
+    and windows-msvc-ci.yml runs on every pull request without credentials.
+    Signing gates itself on the SATELLITE_SIGN_* / CLOUD_SIGN_TOOL
+    environment variables (scripts/sign.ps1) and is skipped when none is set:
 
       [1] scripts\fetch-redist.ps1  downloads + SHA-256 verifies the redist
                                     binaries, stages redist\hidmaestro\ from
@@ -17,7 +18,9 @@
       [3] scripts\verify-helper-sdk.ps1
                                     holds the published helper to
                                     driver_pins.h (its sdk-version output)
-      [4] scripts\sign.ps1          signs satellite.exe (skipped without creds)
+      [4] scripts\sign.ps1          signs satellite.exe, crashpad_handler.exe,
+                                    crashpad_wer.dll and the helper (skipped
+                                    without creds)
       [5] iscc installer.iss        compiles the installer, passing
                                     /DMyAppVersion=<content of /VERSION>
                                     normalized exactly like release.yml
@@ -34,8 +37,9 @@
     installed under Program Files. The resulting installer accepts only a
     destination under Program Files.
 
-    Requires: satellite.exe already built (scripts\build.ps1 first), Inno
-    Setup 6, .NET SDK 10 (scripts\install-deps.ps1 installs both).
+    Requires: satellite.exe already built (scripts\build.ps1 first), the
+    pinned Inno Setup (scripts\install-inno-setup.ps1) and the .NET SDK 10
+    (scripts\install-deps.ps1 installs both).
 
 .PARAMETER Iscc
     Path to ISCC.exe. Defaults to PATH, then the standard install locations.
@@ -44,11 +48,18 @@
     Build the signed UIAccess installer (iscc /DUiAccess=1). Fails unless one
     of SATELLITE_SIGN_THUMBPRINT, SATELLITE_SIGN_PFX or CLOUD_SIGN_TOOL is set
     and satellite.exe carries uiAccess="true".
+
+.PARAMETER Unsigned
+    With -UiAccess: compile the UIAccess installer without credentials, to
+    inspect it. Windows refuses to start the satellite.exe such an installer
+    carries, so the result is for a pull request's compile check, never for
+    a user. windows-msvc-ci.yml uses it.
 #>
 [CmdletBinding()]
 param(
     [string]$Iscc = '',
-    [switch]$UiAccess
+    [switch]$UiAccess,
+    [switch]$Unsigned
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,8 +72,11 @@ if (-not (Test-Path 'satellite.exe')) {
     throw "satellite.exe not found at the repo root. Run scripts\build.ps1 first."
 }
 
+$haveCredentials = [bool]($env:SATELLITE_SIGN_THUMBPRINT -or $env:SATELLITE_SIGN_PFX -or $env:CLOUD_SIGN_TOOL)
+if ($Unsigned -and -not $UiAccess) { throw '-Unsigned only applies with -UiAccess' }
+if ($Unsigned -and $haveCredentials) { throw '-Unsigned with signing credentials set: drop one of them' }
 if ($UiAccess) {
-    if (-not ($env:SATELLITE_SIGN_THUMBPRINT -or $env:SATELLITE_SIGN_PFX -or $env:CLOUD_SIGN_TOOL)) {
+    if (-not $haveCredentials -and -not $Unsigned) {
         throw '-UiAccess needs signing credentials: Windows refuses to start an unsigned uiAccess satellite.exe. Set SATELLITE_SIGN_THUMBPRINT, SATELLITE_SIGN_PFX or CLOUD_SIGN_TOOL (see scripts\sign.ps1).'
     }
     $exeText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $repoRoot 'satellite.exe')))
@@ -100,13 +114,16 @@ Step "[3/7] Checking the published helper against driver_pins.h"
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'verify-helper-sdk.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'verify-helper-sdk.ps1 failed' }
 
-Step "[4/7] Signing satellite.exe"
-if (-not ($env:SATELLITE_SIGN_THUMBPRINT -or $env:SATELLITE_SIGN_PFX -or $env:CLOUD_SIGN_TOOL)) {
-    Write-Output '[SKIP] No signing credentials in env; satellite.exe will be unsigned.'
+$helperExe = 'helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe'
+Step "[4/7] Signing satellite.exe, crashpad_handler.exe, crashpad_wer.dll and the helper"
+if (-not $haveCredentials) {
+    Write-Output '[SKIP] No signing credentials in env; the binaries will be unsigned.'
     Write-Output '       SmartScreen will warn first-time users. See scripts\sign.ps1 for the env vars.'
 } else {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sign.ps1') -Files 'satellite.exe'
-    if ($LASTEXITCODE -ne 0) { throw 'signing satellite.exe failed' }
+    # In process, so -Files arrives as an array (powershell -File would pass
+    # one comma-joined string).
+    & (Join-Path $PSScriptRoot 'sign.ps1') -Files @('satellite.exe', 'crashpad_handler.exe', 'crashpad_wer.dll', $helperExe)
+    if (-not $?) { throw 'signing the binaries failed' }
 }
 
 $isccDefines = @("/DMyAppVersion=$version")
@@ -132,7 +149,7 @@ if ($LASTEXITCODE -ne 0) { throw 'iscc failed' }
 if (-not (Test-Path 'dist/SatelliteSetup.exe')) { throw 'iscc did not produce dist/SatelliteSetup.exe' }
 
 Step "[6/7] Signing SatelliteSetup.exe"
-if (-not ($env:SATELLITE_SIGN_THUMBPRINT -or $env:SATELLITE_SIGN_PFX -or $env:CLOUD_SIGN_TOOL)) {
+if (-not $haveCredentials) {
     Write-Output '[SKIP] No signing credentials in env; SatelliteSetup.exe will be unsigned.'
 } else {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sign.ps1') -Files 'dist\SatelliteSetup.exe'

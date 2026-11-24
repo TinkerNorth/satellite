@@ -16,18 +16,20 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +38,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
@@ -46,33 +50,47 @@ jobs:
             libayatana-appindicator3-dev libgtk-3-dev
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           languages: ${{ matrix.language }}
           # We drive our own cmake build; without this CodeQL warns and falls back.
           build-mode: manual
           # Default + security-extended; surface error-severity findings.
           queries: security-extended,security-and-quality
+          # First-party code only: the vendored components it leaves out, and
+          # why, are in the config file.
+          config-file: ./.github/codeql/codeql-config.yml
 
-      - name: Build (Release, tray enabled)
-        # Standard private-repo runners are 2 vCPU / 7 GB. An unbounded `-j`
-        # reads the host core count (not the cgroup cap) and oversubscribes,
-        # and CodeQL's extractor multiplies per-compile memory; together they
-        # OOM-reclaim the runner (SIGTERM / exit 143). Pin `-j 2` and build only
-        # the `satellite` target: it already compiles every core/net/adapters/
-        # platform source CodeQL needs to analyze, while skipping the test
-        # executables that just duplicate-compile those sources.
+      # The release preset every Linux lane builds with. Bound `-j`: CodeQL's
+      # extractor multiplies per-compile memory, and an unbounded `-j` reads
+      # the host core count rather than the runner's share and OOM-kills it
+      # (SIGTERM / exit 143). Only the `satellite` target: it compiles every
+      # core/net/adapters/platform source CodeQL analyzes, without the test
+      # executables that compile those sources again.
+      - name: Build (preset release, tray enabled)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release --target satellite -j 2
+          cmake --preset release
+          cmake --build --preset release --target satellite -j 2
 
+      # Analysed in full, uploaded filtered: CodeQL ignores paths-ignore for a
+      # compiled language, so the vendored components' results are dropped
+      # from the SARIF (scripts/filter-sarif.py reads the config's list) and
+      # what remains, first-party code, goes to code scanning.
       - name: Perform CodeQL analysis
-        # SARIF upload requires GitHub Advanced Security on private repos.
-        # `continue-on-error` keeps the analysis running and surfacing
-        # findings in the logs while GHAS enablement is still pending
-        # (see HANDOFF.md item 5).
-        continue-on-error: true
-        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: "/language:${{ matrix.language }}"
-          upload: failure-only
+          upload: never
+          output: sarif-results
+
+      - name: Keep first-party results only
+        run: |
+          python3 scripts/filter-sarif.py .github/codeql/codeql-config.yml \
+            "sarif-results/${{ matrix.language }}.sarif" "sarif-results/${{ matrix.language }}.first-party.sarif"
+
+      # Blocking, and the results go to code scanning.
+      - name: Upload the first-party results
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          sarif_file: sarif-results/${{ matrix.language }}.first-party.sarif
+          category: "/language:${{ matrix.language }}"

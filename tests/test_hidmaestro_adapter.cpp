@@ -16,6 +16,7 @@
 #include "../src/platform/windows/driver_pins.h"
 #include "../src/platform/windows/hidmaestro_adapter.h"
 #include "hidmaestro_version_fixture.h"
+#include "../src/core/bits.h"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +33,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace bits = satellite::bits;
 
 using namespace satellite::hidmaestro;
 
@@ -771,7 +774,7 @@ static void test_xbox_submit_bytes() {
     GamepadReport rpt{};
     rpt.sThumbLX = 1000;
     rpt.bLeftTrigger = 255;
-    rpt.wButtons = 0x1000 | 0x0400; // A + Guide
+    rpt.wButtons = 0x1000U | 0x0400U; // A + Guide
     EXPECT(adapter.submitReport(1, rpt));
 
     const uint8_t* sec = prov.inputSection(1);
@@ -839,15 +842,15 @@ static void test_ds4_submit_merges_motion_touch_battery() {
     EXPECT(adapter.submitMotion(2, motion));
     const uint8_t* data = prov.inputData(2);
     EXPECT_EQ(u32at(prov.inputSection(2), INPUT_DATASIZE_OFFSET), (uint32_t)DS4_PAYLOAD_BYTES);
-    const int16_t gyro = static_cast<int16_t>(data[12] | (data[13] << 8));
+    const int16_t gyro = bits::asInt16(bits::loadLe16(data + 12));
     EXPECT_EQ(gyro, sonyGyroFromWire(100));
 
     TouchpadReport touch{};
     touch.finger0.active = true;
     touch.buttonPressed = true;
     EXPECT(adapter.submitTouchpad(2, touch));
-    EXPECT_EQ(data[34] & 0x80, 0x00); // finger 0 down
-    EXPECT_EQ(data[34] & 0x7F, 1);    // first contact bumped the tracking id
+    EXPECT_EQ(bits::u32(data[34]) & 0x80U, 0x00U); // finger 0 down
+    EXPECT_EQ(bits::u32(data[34]) & 0x7FU, 1U);    // first contact bumped the tracking id
 
     BatteryReport batt;
     batt.level = 30;
@@ -859,9 +862,9 @@ static void test_ds4_submit_merges_motion_touch_battery() {
     GamepadReport rpt{};
     rpt.wButtons = 0x1000;
     EXPECT(adapter.submitReport(2, rpt));
-    EXPECT_EQ(static_cast<int16_t>(data[12] | (data[13] << 8)), sonyGyroFromWire(100));
+    EXPECT_EQ(bits::asInt16(bits::loadLe16(data + 12)), sonyGyroFromWire(100));
     EXPECT_EQ(data[11], (uint8_t)3);
-    EXPECT_EQ(data[4] & 0x20, 0x20); // Cross
+    EXPECT_EQ(bits::u32(data[4]) & 0x20U, 0x20U); // Cross
 }
 
 static void test_ds5_submit() {
@@ -882,18 +885,18 @@ static void test_ds5_submit() {
     MotionReport motion{};
     motion.accelZ = 500;
     EXPECT(adapter.submitMotion(4, motion));
-    EXPECT_EQ(static_cast<int16_t>(data[25] | (data[26] << 8)), sonyAccelFromWire(500));
+    EXPECT_EQ(bits::asInt16(bits::loadLe16(data + 25)), sonyAccelFromWire(500));
 
     TouchpadReport touch{};
     touch.finger0.active = true;
     EXPECT(adapter.submitTouchpad(4, touch));
-    EXPECT_EQ(data[32] & 0x80, 0x00);
+    EXPECT_EQ(bits::u32(data[32]) & 0x80U, 0x00U);
 
     BatteryReport batt;
     batt.level = 70;
     batt.status = BATTERY_STATUS_CHARGING;
     EXPECT(adapter.submitBattery(4, batt));
-    EXPECT_EQ(data[52], (uint8_t)(0x10 | 7));
+    EXPECT_EQ(data[52], (uint8_t)(0x10U | 7U));
 }
 
 static void test_idle_sony_pads_keep_reporting() {
@@ -956,7 +959,7 @@ static void test_switch_submit() {
     motion.accelY = 32767;
     EXPECT(adapter.submitMotion(5, motion));
     EXPECT_EQ(data[2], (uint8_t)0x04); // pad state still merged in
-    const int16_t az = static_cast<int16_t>(data[12 + 4] | (data[12 + 5] << 8));
+    const int16_t az = bits::asInt16(bits::loadLe16(data + 12 + 4));
     EXPECT_EQ(az, (int16_t)16384);
 
     // No touchpad/battery surface on this profile.
@@ -980,16 +983,16 @@ static void test_ds5_edge_submit() {
     InputReport input{};
     input.extButtons = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE2;
     EXPECT(adapter.submitInput(4, input));
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
 
     MotionReport motion{};
     motion.gyroX = 100;
     EXPECT(adapter.submitMotion(4, motion));
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
     TouchpadReport touch{};
     touch.finger0.active = true;
     EXPECT(adapter.submitTouchpad(4, touch));
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
     BatteryReport batt;
     batt.level = 50;
     batt.status = BATTERY_STATUS_DISCHARGING;
@@ -1000,7 +1003,7 @@ static void test_ds5_edge_submit() {
     const uint32_t before = prov.inputSeq(4);
     adapter.refreshIdleInput();
     EXPECT(prov.inputSeq(4) > before);
-    EXPECT_EQ(data[9], (uint8_t)(0x80 | 0x10));
+    EXPECT_EQ(data[9], (uint8_t)(0x80U | 0x10U));
     EXPECT_EQ(data[48], (uint8_t)0x80);
 
     EXPECT(adapter.submitReport(4, GamepadReport{}));
@@ -1752,7 +1755,7 @@ static void test_idle_republish_never_tears_a_frame() {
     std::thread submitter([&] {
         int64_t n = 0;
         while (!stop.load(std::memory_order_relaxed)) {
-            adapter.submitReport(1, (n & 1) != 0 ? high : low);
+            adapter.submitReport(1, n % 2 != 0 ? high : low);
             n++;
         }
         submitted = n;
@@ -1935,7 +1938,7 @@ static void test_a_plug_whose_driver_half_is_still_to_come_is_held_until_it_come
     adapter.recheckDrivers();
     EXPECT_EQ(prov.inputSeq(4), (uint32_t)2);
     const uint8_t* data = prov.inputData(4);
-    EXPECT_EQ(static_cast<int16_t>(data[25] | (data[26] << 8)), sonyAccelFromWire(500));
+    EXPECT_EQ(bits::asInt16(bits::loadLe16(data + 25)), sonyAccelFromWire(500));
     GamepadReport rpt{};
     EXPECT(adapter.submitReport(4, rpt));
     EXPECT_EQ(prov.inputSeq(4), (uint32_t)4);
@@ -2951,89 +2954,88 @@ static void test_the_watch_handle_goes_with_the_pad() {
 }
 
 int main() {
-    test_probe_a_read_only_duplicate_refuses_a_write_view();
-    test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end();
-    test_bus_open_probe_only();
-    test_identity_support();
-    test_plugin_lifecycle();
-    test_plugin_denied_elevation();
-    test_plugin_provision_failure();
-    test_unplug_unconfirmed();
-    test_xbox_submit_bytes();
-    test_extended_buttons_dropped_by_xbox_and_ds4();
-    test_ds4_submit_merges_motion_touch_battery();
-    test_ds5_submit();
-    test_idle_sony_pads_keep_reporting();
-    test_switch_submit();
-    test_ds5_edge_submit();
-    test_switch_capture_from_misc1();
-    test_motion_support_matrix();
-    test_rumble_worker_xbox();
-    test_rumble_and_lightbar_worker_ds4();
-    test_audio_request_matrix();
-    test_composite_plug_hooks();
-    test_audio_provision_failure_falls_back();
-    test_speaker_ring_to_callback();
-    test_haptic_ring_to_callback();
-    test_speaker_rate_conversion();
-    test_mic_submit_to_ring();
-    test_mic_submit_without_endpoint();
-    test_mic_rate_conversion();
-    test_mic_led_from_output_ring();
-    test_speaker_ring_concurrent_producer();
-    test_audio_workers_stop_with_the_pad();
-    test_close_bus();
-    test_plugged_pad_answers_while_another_provisions(GamepadIdentity::Xbox,
-                                                      GamepadIdentity::DualSense);
-    test_plugged_pad_answers_while_another_provisions(GamepadIdentity::DualSense,
-                                                      GamepadIdentity::Xbox);
-    test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity::Xbox,
-                                                        GamepadIdentity::DualSense);
-    test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity::DualSense,
-                                                        GamepadIdentity::Xbox);
-    test_idle_republish_never_tears_a_frame();
-    test_a_plug_without_a_version_section_is_refused_before_any_write();
-    test_a_plug_whose_section_names_another_controller_is_refused();
-    test_a_plug_whose_driver_failed_its_start_is_refused();
-    test_a_plug_whose_driver_half_is_still_to_come_is_held_until_it_comes();
-    test_a_held_pad_whose_driver_half_never_comes_is_refused_at_the_deadline();
-    test_a_composite_persona_plugs_without_a_driver_half();
-    test_an_unverified_driver_that_serves_4_is_written_with_one_line_per_change();
-    test_every_verified_release_is_written_without_a_word();
-    test_the_recheck_stops_every_write_to_a_pad_whose_section_changed();
-    test_a_live_pad_whose_driver_half_goes_missing_is_held_then_refused();
-    test_a_refused_pad_relays_nothing_from_its_rings();
-    test_the_helper_says_which_profile_has_a_companion();
-    test_the_companion_slice_follows_the_helpers_report();
-    test_an_unwritten_companion_pair_does_not_hold_the_pad();
-    test_the_hold_scales_with_the_sdks_timeout_scale();
-    test_a_helper_too_old_to_report_the_section_is_named();
-    test_a_composite_refused_at_plug_still_restores_the_default_endpoint();
-    test_a_held_pad_still_delivers_its_output();
-    test_the_version_handle_goes_with_the_pad();
-    test_the_recheck_passes_over_a_busy_pad();
-    test_no_frame_follows_a_hold_under_a_racing_writer();
-    test_no_mic_window_follows_a_refusal_under_a_racing_writer();
-    test_probe_a_reduced_access_duplicate_refuses_a_write_view();
-    test_a_disabled_pad_is_held_and_written_again_when_enabled();
-    test_a_composites_microphone_follows_its_audio_function();
-    test_an_xbox_pad_with_its_companion_disabled_is_written_on();
-    test_a_stale_look_freezes_the_grace();
-    test_an_xbox_pad_whose_companion_failed_is_plugged_again();
-    test_a_pad_whose_helper_connection_is_gone_is_given_up_at_once();
-    test_a_refused_pad_is_still_watched();
-    test_a_pad_away_within_its_grace_is_still_written();
-    test_a_pad_away_past_its_grace_is_given_up();
-    test_a_silent_helper_gives_up_every_pad();
-    test_a_pad_let_go_by_its_client_is_removed_as_asked();
-    test_a_helper_without_the_watch_leaves_pads_as_they_were();
-    test_a_pad_without_a_watch_block_still_goes_with_its_connection();
-    test_a_composite_waits_longer_than_a_umdf2_pad();
-    test_the_watch_and_the_version_section_hold_a_pad_together();
-    test_a_disable_waits_for_a_busy_pad();
-    test_no_frame_follows_a_disable_under_a_racing_writer();
-    test_the_watch_handle_goes_with_the_pad();
-
-    std::cout << "hidmaestro_adapter: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("hidmaestro_adapter", [] {
+        test_probe_a_read_only_duplicate_refuses_a_write_view();
+        test_probe_a_short_section_maps_its_page_and_reads_zeros_past_its_end();
+        test_bus_open_probe_only();
+        test_identity_support();
+        test_plugin_lifecycle();
+        test_plugin_denied_elevation();
+        test_plugin_provision_failure();
+        test_unplug_unconfirmed();
+        test_xbox_submit_bytes();
+        test_extended_buttons_dropped_by_xbox_and_ds4();
+        test_ds4_submit_merges_motion_touch_battery();
+        test_ds5_submit();
+        test_idle_sony_pads_keep_reporting();
+        test_switch_submit();
+        test_ds5_edge_submit();
+        test_switch_capture_from_misc1();
+        test_motion_support_matrix();
+        test_rumble_worker_xbox();
+        test_rumble_and_lightbar_worker_ds4();
+        test_audio_request_matrix();
+        test_composite_plug_hooks();
+        test_audio_provision_failure_falls_back();
+        test_speaker_ring_to_callback();
+        test_haptic_ring_to_callback();
+        test_speaker_rate_conversion();
+        test_mic_submit_to_ring();
+        test_mic_submit_without_endpoint();
+        test_mic_rate_conversion();
+        test_mic_led_from_output_ring();
+        test_speaker_ring_concurrent_producer();
+        test_audio_workers_stop_with_the_pad();
+        test_close_bus();
+        test_plugged_pad_answers_while_another_provisions(GamepadIdentity::Xbox,
+                                                          GamepadIdentity::DualSense);
+        test_plugged_pad_answers_while_another_provisions(GamepadIdentity::DualSense,
+                                                          GamepadIdentity::Xbox);
+        test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity::Xbox,
+                                                            GamepadIdentity::DualSense);
+        test_plugged_pad_answers_while_another_deprovisions(GamepadIdentity::DualSense,
+                                                            GamepadIdentity::Xbox);
+        test_idle_republish_never_tears_a_frame();
+        test_a_plug_without_a_version_section_is_refused_before_any_write();
+        test_a_plug_whose_section_names_another_controller_is_refused();
+        test_a_plug_whose_driver_failed_its_start_is_refused();
+        test_a_plug_whose_driver_half_is_still_to_come_is_held_until_it_comes();
+        test_a_held_pad_whose_driver_half_never_comes_is_refused_at_the_deadline();
+        test_a_composite_persona_plugs_without_a_driver_half();
+        test_an_unverified_driver_that_serves_4_is_written_with_one_line_per_change();
+        test_every_verified_release_is_written_without_a_word();
+        test_the_recheck_stops_every_write_to_a_pad_whose_section_changed();
+        test_a_live_pad_whose_driver_half_goes_missing_is_held_then_refused();
+        test_a_refused_pad_relays_nothing_from_its_rings();
+        test_the_helper_says_which_profile_has_a_companion();
+        test_the_companion_slice_follows_the_helpers_report();
+        test_an_unwritten_companion_pair_does_not_hold_the_pad();
+        test_the_hold_scales_with_the_sdks_timeout_scale();
+        test_a_helper_too_old_to_report_the_section_is_named();
+        test_a_composite_refused_at_plug_still_restores_the_default_endpoint();
+        test_a_held_pad_still_delivers_its_output();
+        test_the_version_handle_goes_with_the_pad();
+        test_the_recheck_passes_over_a_busy_pad();
+        test_no_frame_follows_a_hold_under_a_racing_writer();
+        test_no_mic_window_follows_a_refusal_under_a_racing_writer();
+        test_probe_a_reduced_access_duplicate_refuses_a_write_view();
+        test_a_disabled_pad_is_held_and_written_again_when_enabled();
+        test_a_composites_microphone_follows_its_audio_function();
+        test_an_xbox_pad_with_its_companion_disabled_is_written_on();
+        test_a_stale_look_freezes_the_grace();
+        test_an_xbox_pad_whose_companion_failed_is_plugged_again();
+        test_a_pad_whose_helper_connection_is_gone_is_given_up_at_once();
+        test_a_refused_pad_is_still_watched();
+        test_a_pad_away_within_its_grace_is_still_written();
+        test_a_pad_away_past_its_grace_is_given_up();
+        test_a_silent_helper_gives_up_every_pad();
+        test_a_pad_let_go_by_its_client_is_removed_as_asked();
+        test_a_helper_without_the_watch_leaves_pads_as_they_were();
+        test_a_pad_without_a_watch_block_still_goes_with_its_connection();
+        test_a_composite_waits_longer_than_a_umdf2_pad();
+        test_the_watch_and_the_version_section_hold_a_pad_together();
+        test_a_disable_waits_for_a_busy_pad();
+        test_no_frame_follows_a_disable_under_a_racing_writer();
+        test_the_watch_handle_goes_with_the_pad();
+    });
 }

@@ -68,8 +68,8 @@ class MicWorker {
         uint32_t keyEpoch = 0;
         bool noSinkLogged = false;
     };
-    enum class Binding { Bound, Unbound, Changing };
-    enum class Delivery { Submitted, NoSink, Gone, Unbound };
+    enum class Binding : uint8_t { Bound, Unbound, Changing };
+    enum class Delivery : uint8_t { Submitted, NoSink, Gone, Unbound };
 
     void run();
     bool hasWork() const;

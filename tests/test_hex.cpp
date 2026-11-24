@@ -67,7 +67,7 @@ void test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition() {
     int mismatches = 0;
     for (int position = 0; position < 8; position++) {
         for (uint32_t digit = 0; digit < 16; digit++) {
-            const uint32_t value = digit << (4 * position);
+            const uint32_t value = digit << (4U * position);
             char ref[9];
             EXPECT_EQ(std::snprintf(ref, sizeof(ref), "%08x", value), 8);
             if (hexEncodeBE32(value) != ref) mismatches++;
@@ -88,17 +88,16 @@ void test_hexEncodeBE32_matchesPrintfForWholeValues() {
 } // namespace
 
 int main() {
-    std::cout << "Running hex encoder tests...\n\n";
-    test_hexEncode_isLowercaseHighNibbleFirst();
-    test_hexEncode_ofNothingIsEmpty();
-    test_hexEncode_matchesPrintfForEveryByte();
-    test_hexEncodeSeparated_separatesBytesButNotTheEnds();
-    test_hexEncodeSeparated_ofOneByteHasNoSeparator();
-    test_hexEncodeSeparated_ofNothingIsEmpty();
-    test_hexEncodeBE32_isEightDigitsMostSignificantFirst();
-    test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition();
-    test_hexEncodeBE32_matchesPrintfForWholeValues();
-
-    std::cout << "test_hex: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_hex", [] {
+        std::cout << "Running hex encoder tests...\n\n";
+        test_hexEncode_isLowercaseHighNibbleFirst();
+        test_hexEncode_ofNothingIsEmpty();
+        test_hexEncode_matchesPrintfForEveryByte();
+        test_hexEncodeSeparated_separatesBytesButNotTheEnds();
+        test_hexEncodeSeparated_ofOneByteHasNoSeparator();
+        test_hexEncodeSeparated_ofNothingIsEmpty();
+        test_hexEncodeBE32_isEightDigitsMostSignificantFirst();
+        test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition();
+        test_hexEncodeBE32_matchesPrintfForWholeValues();
+    });
 }

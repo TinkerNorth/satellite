@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "test_util.h"
+#include "../src/core/hex.h"
 
 using namespace satellite;
 
@@ -24,10 +25,10 @@ namespace {
 // Deterministic and different for different bytes, which is all the
 // manifest check needs to see.
 std::string fakeSha(const std::string& bytes) {
-    char part[17];
-    std::snprintf(part, sizeof(part), "%016llx",
-                  static_cast<unsigned long long>(std::hash<std::string>{}(bytes)));
-    return std::string(part) + part + part + part;
+    const std::string part =
+        hexEncodeBE32(static_cast<uint32_t>(std::hash<std::string>{}(bytes) >> 32U)) +
+        hexEncodeBE32(static_cast<uint32_t>(std::hash<std::string>{}(bytes)));
+    return part + part + part + part;
 }
 
 std::string recordsText(long dbVersion, const std::string& usbId) {
@@ -280,7 +281,7 @@ static void test_load() {
     TEST("a bundled copy that does not build fails the load and leaves an empty database");
     {
         Fixture f;
-        f.port.bundled.files["controllers.json"] += " ";
+        f.port.bundled.files["controllers.json"] += ' ';
         EXPECT(!f.svc.load());
         EXPECT(f.svc.active()->db.records.empty());
         EXPECT(f.log.count(LogLevel::ERR) > 0);
@@ -418,16 +419,16 @@ static void test_worker_runs_a_requested_check() {
 }
 
 int main() {
-    test_manifest_decision();
-    test_cache_supersedes();
-    test_cadence();
-    test_result_names();
-    test_load();
-    test_check_off();
-    test_check_up_to_date();
-    test_check_updates();
-    test_check_failures_keep_the_active_copy();
-    test_worker_runs_a_requested_check();
-    std::cout << "controller_db_service: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("controller_db_service", [] {
+        test_manifest_decision();
+        test_cache_supersedes();
+        test_cadence();
+        test_result_names();
+        test_load();
+        test_check_off();
+        test_check_up_to_date();
+        test_check_updates();
+        test_check_failures_keep_the_active_copy();
+        test_worker_runs_a_requested_check();
+    });
 }

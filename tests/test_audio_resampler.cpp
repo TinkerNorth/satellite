@@ -243,8 +243,10 @@ static void test_bounds_and_saturation() {
     RationalResampler loud;
     loud.configure(32000, 48000, 1);
     std::vector<int16_t> square(2000);
-    for (size_t i = 0; i < square.size(); ++i)
-        square[i] = (i / 8) % 2 ? static_cast<int16_t>(-32768) : static_cast<int16_t>(32767);
+    for (size_t i = 0; i < square.size(); ++i) {
+        square[i] =
+            (((i / 8) % 2) != 0U) ? static_cast<int16_t>(-32768) : static_cast<int16_t>(32767);
+    }
     std::vector<int16_t> loudOut;
     loud.process(square.data(), square.size(), loudOut);
     bool signFlipSpike = false;
@@ -262,15 +264,14 @@ static void test_bounds_and_saturation() {
 }
 
 int main() {
-    test_identity_passthrough();
-    test_upsample_32k_to_48k();
-    test_downsample_48k_to_16k();
-    test_downsample_rejects_out_of_band_energy();
-    test_streaming_matches_one_shot();
-    test_clear_drops_history();
-    test_channels_are_independent();
-    test_bounds_and_saturation();
-
-    std::cout << "audio_resampler: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("audio_resampler", [] {
+        test_identity_passthrough();
+        test_upsample_32k_to_48k();
+        test_downsample_48k_to_16k();
+        test_downsample_rejects_out_of_band_energy();
+        test_streaming_matches_one_shot();
+        test_clear_drops_history();
+        test_channels_are_independent();
+        test_bounds_and_saturation();
+    });
 }

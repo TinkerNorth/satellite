@@ -5,7 +5,7 @@
 // feature-report blobs served on get-report.
 //
 // OS-free by design (same pure-codec/IO-shell doctrine as the rest of src/:
-// see docs/architecture.md "a pure codec, separate from its I/O"), and shared
+// see docs/ARCHITECTURE.md "a pure codec, separate from its I/O"), and shared
 // by two shells: the macOS IOHIDUserDevice adapter
 // (mac_hid_gamepad_adapter.cpp) and the Windows HIDMaestro adapter's report
 // packer (platform/windows/hidmaestro_report.h) — HIDMaestro's dualshock-4-v2
@@ -17,6 +17,7 @@
 // one position right by the leading report-id.
 #pragma once
 
+#include "core/bits.h"
 #include "core/byte_order.h"
 #include "core/hex.h"
 #include "core/touchpad_codec.h"
@@ -146,10 +147,10 @@ inline const size_t DS4V2_REPORT_DESCRIPTOR_BYTES = sizeof(DS4V2_REPORT_DESCRIPT
 // resolve identically everywhere. constexpr so a shell can hold its driver's
 // hat constants to it at compile time.
 constexpr uint8_t ds4HatFromButtons(uint16_t wButtons) {
-    const bool up = (wButtons & 0x0001) != 0;
-    const bool down = (wButtons & 0x0002) != 0;
-    const bool left = (wButtons & 0x0004) != 0;
-    const bool right = (wButtons & 0x0008) != 0;
+    const bool up = satellite::bits::anySet(wButtons, 0x0001U);
+    const bool down = satellite::bits::anySet(wButtons, 0x0002U);
+    const bool left = satellite::bits::anySet(wButtons, 0x0004U);
+    const bool right = satellite::bits::anySet(wButtons, 0x0008U);
     if (up && right) return 1;
     if (up && left) return 7;
     if (down && right) return 3;
@@ -170,19 +171,19 @@ struct XusbToSonyButton {
     uint16_t sony;
 };
 inline constexpr XusbToSonyButton XUSB_TO_SONY_BUTTONS[] = {
-    {0x4000, 1u << 4},  // X      -> Square
-    {0x1000, 1u << 5},  // A      -> Cross
-    {0x2000, 1u << 6},  // B      -> Circle
-    {0x8000, 1u << 7},  // Y      -> Triangle
-    {0x0100, 1u << 8},  // LB     -> L1
-    {0x0200, 1u << 9},  // RB     -> R1
-    {0x0020, 1u << 12}, // Back   -> Share / Create
-    {0x0010, 1u << 13}, // Start  -> Options
-    {0x0040, 1u << 14}, // LS     -> L3
-    {0x0080, 1u << 15}, // RS     -> R3
+    {0x4000, 1u << 4U},  // X      -> Square
+    {0x1000, 1u << 5U},  // A      -> Cross
+    {0x2000, 1u << 6U},  // B      -> Circle
+    {0x8000, 1u << 7U},  // Y      -> Triangle
+    {0x0100, 1u << 8U},  // LB     -> L1
+    {0x0200, 1u << 9U},  // RB     -> R1
+    {0x0020, 1u << 12U}, // Back   -> Share / Create
+    {0x0010, 1u << 13U}, // Start  -> Options
+    {0x0040, 1u << 14U}, // LS     -> L3
+    {0x0080, 1u << 15U}, // RS     -> R3
 };
-inline constexpr uint16_t SONY_BUTTON_L2 = 1u << 10;
-inline constexpr uint16_t SONY_BUTTON_R2 = 1u << 11;
+inline constexpr uint16_t SONY_BUTTON_L2 = 1u << 10U;
+inline constexpr uint16_t SONY_BUTTON_R2 = 1u << 11U;
 
 // The table looked up one XUSB bit at a time, at compile time, so a shell can
 // hold another API's button constants to it with a static_assert. 0 for a bit
@@ -203,7 +204,7 @@ constexpr uint16_t sonyButtonsFromXusb(uint16_t wButtons, uint8_t leftTrigger,
                                        uint8_t rightTrigger) {
     uint16_t btn = ds4HatFromButtons(wButtons);
     for (const auto& m : XUSB_TO_SONY_BUTTONS) {
-        if (wButtons & m.xusb) btn |= m.sony;
+        if (satellite::bits::anySet(wButtons, m.xusb)) btn |= m.sony;
     }
     if (leftTrigger > 0) btn |= SONY_BUTTON_L2;
     if (rightTrigger > 0) btn |= SONY_BUTTON_R2;
@@ -226,19 +227,19 @@ inline uint8_t ds4StickByteInverted(int16_t v) {
 // tenths (nibble 11 + cable = the "fully charged" sentinel). The ViGEm
 // adapter's battery frame reads this too.
 inline uint8_t ds4BatteryByte(const BatteryReport& report) {
-    int nibble = (report.level == BATTERY_LEVEL_UNKNOWN)
-                     ? 5 // mid-scale so the host still shows something
-                     : static_cast<int>(report.level) / 10;
-    if (nibble > 10) nibble = 10;
+    uint32_t nibble = (report.level == BATTERY_LEVEL_UNKNOWN)
+                          ? 5U // mid-scale so the host still shows something
+                          : satellite::bits::u32(report.level) / 10U;
+    if (nibble > 10U) nibble = 10U;
 
     switch (report.status) {
     case BATTERY_STATUS_CHARGING:
-        return static_cast<uint8_t>(0x10 | nibble); // cable connected + charging
+        return satellite::bits::lowByte(0x10U | nibble); // cable connected + charging
     case BATTERY_STATUS_FULL:
     case BATTERY_STATUS_WIRED:
-        return static_cast<uint8_t>(0x10 | 11);
+        return satellite::bits::lowByte(0x10U | 11U);
     default: // discharging/unknown: on battery, no cable bit
-        return static_cast<uint8_t>(nibble);
+        return satellite::bits::lowByte(nibble);
     }
 }
 
@@ -292,9 +293,10 @@ inline void ds4PackInputReport(const Ds4InputState& st, uint8_t out[DS4V2_INPUT_
     satellite::writeLE16(out + 5,
                          sonyButtonsFromXusb(x, st.pad.bLeftTrigger, st.pad.bRightTrigger));
 
-    out[7] = static_cast<uint8_t>(((x & 0x0400) ? 0x01 : 0x00) |          // Guide -> PS
-                                  (st.touchpadButtonPressed ? 0x02 : 0) | // touchpad click
-                                  ((st.frameCounter & 0x3F) << 2));
+    out[7] = satellite::bits::lowByte(
+        (satellite::bits::anySet(x, 0x0400U) ? 0x01U : 0x00U) | // Guide -> PS
+        (st.touchpadButtonPressed ? 0x02U : 0x00U) |            // touchpad click
+        ((satellite::bits::u32(st.frameCounter) & 0x3FU) << 2U));
 
     out[8] = st.pad.bLeftTrigger;
     out[9] = st.pad.bRightTrigger;
@@ -353,7 +355,7 @@ inline Ds4OutputReport ds4ParseOutputReport(uint32_t reportId, const uint8_t* da
     if (data == nullptr) return out;
     if (reportId != DS4V2_OUTPUT_REPORT_ID) {
         // Some transports report id 0 and leave the id byte in the payload.
-        if (!(reportId == 0 && len >= 1 && data[0] == DS4V2_OUTPUT_REPORT_ID)) return out;
+        if (reportId != 0 || len < 1 || data[0] != DS4V2_OUTPUT_REPORT_ID) return out;
     }
     const uint8_t* p = data;
     size_t n = len;
@@ -363,10 +365,10 @@ inline Ds4OutputReport ds4ParseOutputReport(uint32_t reportId, const uint8_t* da
     }
     if (n < 8) return out; // need flags..B
     out.valid = true;
-    out.rumbleValid = (p[0] & 0x01) != 0;
+    out.rumbleValid = satellite::bits::anySet(p[0], 0x01U);
     out.smallMotor = p[3];
     out.largeMotor = p[4];
-    out.lightbarValid = (p[0] & 0x02) != 0;
+    out.lightbarValid = satellite::bits::anySet(p[0], 0x02U);
     out.r = p[5];
     out.g = p[6];
     out.b = p[7];
@@ -488,7 +490,7 @@ inline void ds4MacForSerial(uint32_t serial, uint8_t out[6]) {
     out[2] = 0x41; // 'A'
     out[3] = 0x54; // 'T'
     out[4] = 0x00;
-    out[5] = static_cast<uint8_t>(serial & 0xFF);
+    out[5] = satellite::bits::lowByte(serial);
 }
 
 // The kIOHIDSerialNumberKey string, "02:53:41:54:00:0c" for serial 0x0C: real

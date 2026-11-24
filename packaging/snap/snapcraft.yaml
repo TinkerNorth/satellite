@@ -1,3 +1,4 @@
+# Unpublished template: version 1.0.0 is a placeholder, no workflow builds or submits this channel (docs/PACKAGING.md).
 # Snap packaging for Satellite.
 #
 # SCOPE: sideloading only --
@@ -22,7 +23,7 @@
 #     desktop user is still refused by file permissions with the plug connected.
 #
 # That last point is the important one, and it drives the two app shapes below.
-# See docs/packaging.md.
+# See docs/PACKAGING.md.
 name: satellite
 base: core24
 version: '1.0.0'

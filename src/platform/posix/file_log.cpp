@@ -5,6 +5,7 @@
 #include "config_posix.h"
 
 #include "core/log_writer.h"
+#include "core/checked_io.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -13,6 +14,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -27,7 +29,7 @@ namespace lifecycle {
 
 namespace {
 
-constexpr size_t kMaxLogFileBytes = 5 * 1024 * 1024;
+constexpr size_t kMaxLogFileBytes = size_t{5} * 1024 * 1024;
 constexpr int kLogRetentionDays = 7;
 constexpr int kMaxRotatedSuffix = 100;
 constexpr size_t kLogExtensionLength = 4;
@@ -47,9 +49,10 @@ int dayKey(const std::tm& tm) {
 
 std::string logFileName(const std::tm& day) {
     char name[64];
-    std::snprintf(name, sizeof(name), "satellite-%04d%02d%02d.log", day.tm_year + 1900,
-                  day.tm_mon + 1, day.tm_mday);
-    return name;
+    const int written = std::snprintf(name, sizeof(name), "satellite-%04d%02d%02d.log",
+                                      day.tm_year + 1900, day.tm_mon + 1, day.tm_mday);
+    // A name that did not format is no log file; the caller treats it as none.
+    return satellite::io::formatted(written, name) ? std::string(name) : std::string();
 }
 
 void deleteOlderThan(const std::string& dir) {
@@ -109,7 +112,8 @@ class FileLogSink : public satellite::ILogSink {
         if (dir_.empty()) return false;
         const auto now = std::chrono::steady_clock::now();
         if (now < retryAt_) return false;
-        if (openPath(dir_ + "/" + logFileName(day), key)) return true;
+        const std::string name = logFileName(day);
+        if (!name.empty() && openPath(dir_ + "/" + name, key)) return true;
         retryAt_ = now + kReopenRetry;
         return false;
     }

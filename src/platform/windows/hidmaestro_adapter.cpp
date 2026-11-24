@@ -3,10 +3,13 @@
 
 #include "driver_pins.h"
 #include "pointer_inject.h"
+#include "core/bits.h"
 
 #include <algorithm>
 #include <cstring>
 #include <vector>
+
+namespace bits = satellite::bits;
 
 namespace {
 
@@ -14,7 +17,7 @@ namespace hm = satellite::hidmaestro;
 
 // IoSlot::hostDisabled's bit for a pad whose every input presentation is
 // disabled, above the WATCH_PRESENTS_* bits.
-constexpr uint32_t HOST_INPUT_HELD = 1u << 8;
+constexpr uint32_t HOST_INPUT_HELD = 1U << 8U;
 
 inline bool isValidSerial(uint32_t serial) {
     return serial >= 1 && serial <= MAX_BACKEND_CONTROLLERS;
@@ -75,33 +78,42 @@ bool HidMaestroAdapter::ensureBusOpen() {
 }
 
 void HidMaestroAdapter::closeBus() {
-    std::vector<uint32_t> serials;
-    {
+    // Closing the bus (which the destructor does) allocates nothing. Stopping a
+    // worker drops busMtx_ to join it, so each pass stops the first serial
+    // still running a worker until none is.
+    for (;;) {
         std::lock_guard<TrackedMutex> lk(busMtx_);
-        serials.reserve(outputWorkers_.size() + speakerWorkers_.size() + hapticWorkers_.size());
-        for (auto& [serial, _] : outputWorkers_) serials.push_back(serial);
-        for (auto& [serial, _] : speakerWorkers_) serials.push_back(serial);
-        for (auto& [serial, _] : hapticWorkers_) serials.push_back(serial);
-    }
-    for (uint32_t serial : serials) {
-        std::lock_guard<TrackedMutex> lk(busMtx_);
+        uint32_t serial = 0;
+        if (!outputWorkers_.empty()) {
+            serial = outputWorkers_.begin()->first;
+        } else if (!speakerWorkers_.empty()) {
+            serial = speakerWorkers_.begin()->first;
+        } else if (!hapticWorkers_.empty()) {
+            serial = hapticWorkers_.begin()->first;
+        } else {
+            break;
+        }
         stopOutputWorker(serial);
         stopAudioWorker(serial, AudioLane::Speaker);
         stopAudioWorker(serial, AudioLane::Haptic);
     }
 
-    std::vector<std::pair<uint32_t, hm::Teardown>> provisioned;
+    // At most one teardown per slot, so a fixed table holds them.
+    std::array<std::pair<uint32_t, hm::Teardown>, MAX_BACKEND_CONTROLLERS> provisioned{};
+    size_t provisionedCount = 0;
     {
         std::lock_guard<TrackedMutex> lk(busMtx_);
         for (uint32_t s = 1; s <= MAX_BACKEND_CONTROLLERS; s++) {
             IoSlot& slot = io_[s];
             if (slot.plugged.load(std::memory_order_acquire)) {
-                provisioned.emplace_back(s, teardownFor(slot));
+                provisioned[provisionedCount++] = {s, teardownFor(slot)};
             }
             releaseSlotLocked(slot);
         }
     }
-    for (const auto& [s, why] : provisioned) provisioner_.deprovision(s, why);
+    for (size_t i = 0; i < provisionedCount; ++i) {
+        provisioner_.deprovision(provisioned[i].first, provisioned[i].second);
+    }
     // The helper stays resident: closeBus fires every time the session goes
     // idle, and respawning the elevated helper would mean a fresh UAC prompt
     // on every reconnect. It exits with satellite (parent watch) or in the
@@ -553,7 +565,7 @@ uint16_t HidMaestroAdapter::packFrame(IoSlot& slot) {
         // The DS4 timestamp ticks at 16/3 us; the frame counter is six bits.
         const int64_t us = microsSinceLastFrame(slot.lastSonySubmit);
         slot.ds4.timestamp = static_cast<uint16_t>(slot.ds4.timestamp + (us * 3) / 16);
-        slot.ds4.frameCounter = static_cast<uint8_t>((slot.ds4.frameCounter + 1) & 0x3F);
+        slot.ds4.frameCounter = bits::lowByte((bits::u32(slot.ds4.frameCounter) + 1U) & 0x3FU);
         hm::packDs4Payload(slot.ds4, slot.payload);
         return hm::DS4_PAYLOAD_BYTES;
     }
@@ -798,12 +810,16 @@ bool HidMaestroAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& re
     // Bump tracking id on up->down so a consumer reads a new contact, not a
     // teleporting drag.
     if (report.finger0.active && !slot.fingerDown0) {
-        slot.ds4.touchTrackingId0 = static_cast<uint8_t>((slot.ds4.touchTrackingId0 + 1) & 0x7F);
-        slot.ds5.touchTrackingId0 = static_cast<uint8_t>((slot.ds5.touchTrackingId0 + 1) & 0x7F);
+        slot.ds4.touchTrackingId0 =
+            bits::lowByte((bits::u32(slot.ds4.touchTrackingId0) + 1U) & 0x7FU);
+        slot.ds5.touchTrackingId0 =
+            bits::lowByte((bits::u32(slot.ds5.touchTrackingId0) + 1U) & 0x7FU);
     }
     if (report.finger1.active && !slot.fingerDown1) {
-        slot.ds4.touchTrackingId1 = static_cast<uint8_t>((slot.ds4.touchTrackingId1 + 1) & 0x7F);
-        slot.ds5.touchTrackingId1 = static_cast<uint8_t>((slot.ds5.touchTrackingId1 + 1) & 0x7F);
+        slot.ds4.touchTrackingId1 =
+            bits::lowByte((bits::u32(slot.ds4.touchTrackingId1) + 1U) & 0x7FU);
+        slot.ds5.touchTrackingId1 =
+            bits::lowByte((bits::u32(slot.ds5.touchTrackingId1) + 1U) & 0x7FU);
     }
     slot.fingerDown0 = report.finger0.active;
     slot.fingerDown1 = report.finger1.active;
@@ -835,19 +851,19 @@ void HidMaestroAdapter::setRumbleCallback(RumbleCallback cb) {
     rumbleCb_ = std::move(cb);
 }
 
-void HidMaestroAdapter::setLightbarCallback(LightbarCallback cb) {
+void HidMaestroAdapter::setLightbarCallback(const LightbarCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    lightbarCb_ = std::move(cb);
+    lightbarCb_ = cb;
 }
 
-void HidMaestroAdapter::setTriggerEffectsCallback(TriggerEffectsCallback cb) {
+void HidMaestroAdapter::setTriggerEffectsCallback(const TriggerEffectsCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    triggerEffectsCb_ = std::move(cb);
+    triggerEffectsCb_ = cb;
 }
 
-void HidMaestroAdapter::setPlayerLedsCallback(PlayerLedsCallback cb) {
+void HidMaestroAdapter::setPlayerLedsCallback(const PlayerLedsCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    playerLedsCb_ = std::move(cb);
+    playerLedsCb_ = cb;
 }
 
 void HidMaestroAdapter::setCompositePlugHooks(CompositePlugHook before, CompositePlugHook after) {
@@ -856,19 +872,19 @@ void HidMaestroAdapter::setCompositePlugHooks(CompositePlugHook before, Composit
     compositePlugAfter_ = std::move(after);
 }
 
-void HidMaestroAdapter::setSpeakerAudioCallback(SpeakerAudioCallback cb) {
+void HidMaestroAdapter::setSpeakerAudioCallback(const SpeakerAudioCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    speakerAudioCb_ = std::move(cb);
+    speakerAudioCb_ = cb;
 }
 
-void HidMaestroAdapter::setHapticAudioCallback(HapticAudioCallback cb) {
+void HidMaestroAdapter::setHapticAudioCallback(const HapticAudioCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    hapticAudioCb_ = std::move(cb);
+    hapticAudioCb_ = cb;
 }
 
-void HidMaestroAdapter::setMicLedCallback(MicLedCallback cb) {
+void HidMaestroAdapter::setMicLedCallback(const MicLedCallback& cb) {
     std::lock_guard<TrackedMutex> lk(busMtx_);
-    micLedCb_ = std::move(cb);
+    micLedCb_ = cb;
 }
 
 bool HidMaestroAdapter::hasAudioPersona(uint32_t serial) const {

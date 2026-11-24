@@ -26,8 +26,8 @@ the 90-day freshness window.
 
 - Component: yhirose/cpp-httplib
 - Upstream: https://github.com/yhirose/cpp-httplib
-- Pinned-commit: v0.58.0
-- Last-vendored: 2026-09-30
+- Pinned-commit: v0.67.0
+- Last-vendored: 2026-11-23
 - License: MIT
 - Notes: vendored as a single header, byte-identical to the upstream tag
   (modulo CRLF in the working tree; git stores it LF). No local
@@ -52,25 +52,44 @@ the 90-day freshness window.
   WebSocket route. No API Satellite calls changed. Re-checked 2026-09-30:
   v0.58.0 is still the newest release and the header is byte-identical to
   the tag's.
+  v0.58.0 -> v0.67.0 review (2026-11-23): nine releases, every note read.
+  The ones that reach Satellite: on Windows a junction or symbolic link inside
+  a mount point no longer serves a file outside it (0.67.0, #2670), and the
+  dashboard is served through `set_mount_point("/", ...)`; a mount point now
+  serves only canonical paths and refuses segments ending in `.` or a space
+  (0.63.0, 0.64.0), which no dashboard file has; the request line is read
+  strictly and an HTTP/1.1 request without `Host` gets 400 (0.62.0), which
+  every browser and every Dish client sends; a content setter replaces an
+  earlier `Content-Type` and the library works out `Content-Length` itself
+  (0.62.0), and no route sets either by hand; an exception handler that sets
+  no status answers 500 (0.64.0), and Satellite installs none. The client
+  side changes (redirect parameters, kept-alive reuse, stale
+  `Content-Length`) do not reach Satellite, which uses only the server
+  classes (`git grep httplib::Client` finds nothing in `src/`). No API Satellite calls changed or was
+  deprecated; `set_hostname_addr_map()` (deprecated in 0.64.0) is not used.
+  No GitHub security advisory is open against a release after v0.58.0. The
+  header is byte-identical to the v0.67.0 tag (commit 7800c3dc).
 
 ## nlohmann/json (`lib/nlohmann/json.hpp`)
 
 - Component: nlohmann/json
 - Upstream: https://github.com/nlohmann/json
 - Pinned-commit: v3.12.0
-- Last-vendored: 2026-09-30
+- Last-vendored: 2026-11-23
 - License: MIT
 - Notes: vendored as the single-header amalgamation. No local modifications.
   Used project-wide via `src/core/json.h` for response building and request /
   config / GitHub-API parsing. Re-checked 2026-09-30: v3.12.0 is still the
   newest release and the header is byte-identical to its `json.hpp` asset.
+  Re-checked 2026-11-23: v3.12.0 is still the newest release, and
+  `json.hpp` is byte-identical to the tag's `single_include/nlohmann/json.hpp`.
 
 ## libsodium (`lib/libsodium/`)
 
 - Component: jedisct1/libsodium
 - Upstream: https://github.com/jedisct1/libsodium
 - Pinned-commit: 1.0.22-RELEASE
-- Last-vendored: 2026-09-30
+- Last-vendored: 2026-11-23
 - License: ISC
 - Notes: bundled MinGW prebuilt archives (`libsodium-mingw.tar.gz`,
   `libsodium-win32/`, `libsodium-win64/`) consumed by the Windows
@@ -86,14 +105,17 @@ the 90-day freshness window.
   release bytes so the pin names what is actually here. Re-checked
   2026-09-30: 1.0.22 is still the newest release, the archive's SHA-256 is
   the one above, and the two directories are its contents (the working
-  tree's line endings aside, which git normalises).
+  tree's line endings aside, which git normalises). Re-checked 2026-11-23:
+  1.0.22 is still the newest release, the minisign signature verifies, the
+  archive's SHA-256 is the one above, and both directories equal its
+  contents.
 
 ## ViGEm Bus Driver SDK (`vigem/include/ViGEm/`)
 
 - Component: ViGEm/ViGEmClient (the SDK submodule of nefarius/ViGEmBus)
 - Upstream: https://github.com/ViGEm/ViGEmClient
 - Pinned-commit: v1.21.222.0 (driver ABI targeted: ViGEmBus v1.22.0)
-- Last-vendored: 2026-09-30 (upstream archived 2023-09-08 at b66d02d; each
+- Last-vendored: 2026-11-23 (upstream archived 2023-09-08 at b66d02d; each
   re-stamp is a check that nothing moved upstream, and nothing has)
 - License: MIT
 - Notes: **not** a verbatim upstream copy — a hand-maintained minimal
@@ -117,13 +139,17 @@ the 90-day freshness window.
   read the LED slot as the small motor), and the DS4 notification carries the
   small motor first. `test_vigem_adapter` now pins every IOCTL code, both
   notification sizes and both layouts.
+  Re-checked 2026-11-23: ViGEmClient is still archived (last push
+  2023-09-08), v1.21.222.0 is still its newest tag and ViGEmBus v1.22.0 its
+  driver's newest release, so the header this subset is diffed against has
+  not moved and the 2026-09-29 review above still holds.
 
 ## HIDMaestro shared-memory protocol (`src/platform/windows/hidmaestro_wire.h`)
 
 - Component: hifihedgehog/HIDMaestro (driver shared-memory + report contracts)
 - Upstream: https://github.com/hifihedgehog/HIDMaestro
-- Pinned-commit: v2.1.0
-- Last-vendored: 2026-11-01
+- Pinned-commit: v2.3.0
+- Last-vendored: 2026-11-23
 - License: MIT
 - Notes: not copied source — a hand-written re-statement of the driver's
   shared-memory contract (`driver/driver.h` `HIDMAESTRO_SHARED_INPUT` /
@@ -180,6 +206,27 @@ the 90-day freshness window.
   unopened. The runtime driver itself deploys via the bundled
   `satellite-hm-helper.exe` from the hash-pinned release zip (see
   `redist/README.md`); we ship no driver code.
+  v2.1.0 -> v2.3.0 (2026-11-23), diffed tag to tag in a full clone:
+  nothing under `driver/` changed, `driver.h`, `hm_contract.h` and both INFs
+  included, so the section sizes (362 / 16904), offsets, seqlock, events
+  and the version section hold, and the embedded driver is still the 2.1.0
+  release's `2.1.0.1716` (release notes: byte-identical driver files), which
+  is why `SATELLITE_HIDMAESTRO_VERIFIED_DRIVER_RELEASES` stays "2.1.0" while
+  the SDK pin moves. `SharedMemoryIO.cs` changed no constant, offset or size
+  (the PID force-feedback seqlock now takes a lock, and USB/IP delivery
+  helpers were added; Satellite uses neither). `DeviceIdentity.cs`,
+  `TimeoutScale.cs`, the `sony-*` models and both devnode name forms
+  (`ROOT\{enumerator}\{token}`, `USB\VID_xxxx&PID_xxxx\{serial}`) are
+  unchanged. The seven catalog profiles changed: the six Sony files gain
+  `extendedReport.alwaysArmed`, read only by the SDK's own `SubmitState`
+  codec, which the helper does not use for them; both Edge files declare
+  bytes 49 to 52 (`activeProfile` and three constants) with the same
+  `inputDefaults`, which `DS5_EDGE_INPUT_DEFAULTS` already carries;
+  `switch-pro` changes only its `notes`. 2.2.0 added the `sinput` profile
+  and 2.3.0 the USB/IP backend choice and ARM64; Satellite is x64 and names
+  no backend, so `HMBackend.Auto` keeps it on the UMDF2 driver. Not run for
+  this bump: `satellite-hm-helper.exe selftest` on hardware, which the
+  maintainer runs before the release that ships it.
   v1.9.2 -> v2.1.0 (2026-11-01): `HIDMAESTRO_SHARED_INPUT` and
   `HIDMAESTRO_SHARED_OUTPUT` are byte-identical (362 / 8 + 64 x 264) and
   every Source code is the same, so the wire pins hold. What moved is

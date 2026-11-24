@@ -29,7 +29,7 @@ const char* const LOCALES[] = {"en", "bs", "de", "es", "fr", "pt-BR"};
 std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 std::string web(const std::string& relative) {
@@ -232,11 +232,11 @@ static void test_check_now_follows_the_switch() {
 }
 
 int main() {
-    test_check_now_follows_the_switch();
-    test_test_lanes_match_the_server();
-    test_server_names_have_strings();
-    test_new_surfaces_are_translated();
-    test_report_categories_match_the_contract();
-    std::cout << "dashboard_contract: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("dashboard_contract", [] {
+        test_check_now_follows_the_switch();
+        test_test_lanes_match_the_server();
+        test_server_names_have_strings();
+        test_new_surfaces_are_translated();
+        test_report_categories_match_the_contract();
+    });
 }

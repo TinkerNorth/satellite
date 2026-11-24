@@ -43,13 +43,13 @@ void deleteOlderThan(const std::wstring& dir, const wchar_t* ext, int days) {
     FILETIME ftNow;
     GetSystemTimeAsFileTime(&ftNow);
     const ULONGLONG now =
-        (static_cast<ULONGLONG>(ftNow.dwHighDateTime) << 32) | ftNow.dwLowDateTime;
+        (static_cast<ULONGLONG>(ftNow.dwHighDateTime) << 32U) | ftNow.dwLowDateTime;
     const ULONGLONG kFtPerDay = 10000000ULL * 60ULL * 60ULL * 24ULL;
     const ULONGLONG cutoff = now - static_cast<ULONGLONG>(days) * kFtPerDay;
 
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        const ULONGLONG t = (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32) |
+        const ULONGLONG t = (static_cast<ULONGLONG>(fd.ftLastWriteTime.dwHighDateTime) << 32U) |
                             fd.ftLastWriteTime.dwLowDateTime;
         if (t < cutoff) {
             const std::wstring full = dir + L"\\" + fd.cFileName;

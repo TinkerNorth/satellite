@@ -25,7 +25,7 @@ inline void sampleInputActivity(InputActivity& a, uint64_t counter, int64_t nowM
     const int64_t elapsedMs = nowMs - a.sampledAtMs;
     if (elapsedMs <= 0) return;
     const uint64_t delta = counter - a.sampled;
-    const uint64_t elapsed = static_cast<uint64_t>(elapsedMs);
+    const auto elapsed = static_cast<uint64_t>(elapsedMs);
     const uint64_t rounded = (delta * 1000u + elapsed / 2u) / elapsed;
     a.rateHz = static_cast<uint32_t>(rounded);
     if (delta > 0) a.lastAtMs = nowMs;

@@ -7,6 +7,7 @@
 #endif
 
 #include "pause_detector.h"
+#include "core/checked_io.h"
 
 #include <windows.h>
 
@@ -34,6 +35,7 @@ using WallClock = std::chrono::system_clock;
 using Millis = std::chrono::duration<double, std::milli>;
 
 constexpr size_t SLOT_COUNT = XUSER_MAX_COUNT;
+static_assert(SLOT_COUNT == satellite::bench::PAUSE_DETECTOR_SLOTS, "the detector tracks every XInput slot");
 constexpr double DEFAULT_SECS = 30.0;
 constexpr double DEFAULT_GAP_MS = 40.0;
 constexpr double MIN_SECS = 0.1;
@@ -106,12 +108,12 @@ ParsedOptions parseOptions(int argc, char** argv) {
 }
 
 void printUsage(std::FILE* out) {
-    std::fputs("usage: xinput_monitor [options]\n"
+    satellite::io::written(out, std::fputs("usage: xinput_monitor [options]\n"
                "  --secs <s>     seconds to poll (default 30)\n"
                "  --gap-ms <ms>  report each pause of at least this long between two changes of "
                "a slot's\n"
                "                 packet number (default 40)\n",
-               out);
+               out));
 }
 
 template <typename Fn> Fn procAddress(HMODULE module, const char* name) {
@@ -129,23 +131,27 @@ double elapsedMs(const Timeline& timeline) { return Millis(Clock::now() - timeli
 
 std::string fixed(double value, int decimals) {
     std::array<char, 64> text{};
-    std::snprintf(text.data(), text.size(), "%.*f", decimals, value);
-    return text.data();
+    const int written = std::snprintf(text.data(), text.size(), "%.*f", decimals, value);
+    return satellite::io::formatted(written, text.data(), text.size()) ? std::string(text.data())
+                                                                        : std::string();
 }
 
 std::string wallClockText(WallClock::time_point wall) {
     const std::time_t seconds = WallClock::to_time_t(wall);
     std::tm local{};
-    localtime_s(&local, &seconds);
+    if (localtime_s(&local, &seconds) != 0) return std::string();
     const auto sinceEpoch =
         std::chrono::duration_cast<std::chrono::milliseconds>(wall.time_since_epoch());
     const int64_t millis = sinceEpoch.count() % MILLIS_PER_WHOLE_SECOND;
     std::array<char, 32> date{};
-    std::strftime(date.data(), date.size(), "%Y-%m-%dT%H:%M:%S", &local);
+    if (std::strftime(date.data(), date.size(), "%Y-%m-%dT%H:%M:%S", &local) == 0) {
+        return std::string();
+    }
     std::array<char, 48> text{};
-    std::snprintf(text.data(), text.size(), "%s.%03lld", date.data(),
-                  static_cast<long long>(millis));
-    return text.data();
+    const int written = std::snprintf(text.data(), text.size(), "%s.%03lld", date.data(),
+                                      static_cast<long long>(millis));
+    return satellite::io::formatted(written, text.data(), text.size()) ? std::string(text.data())
+                                                                        : std::string();
 }
 
 std::string stampAt(const Timeline& timeline, double elapsed) {
@@ -155,7 +161,7 @@ std::string stampAt(const Timeline& timeline, double elapsed) {
 
 void printLine(const std::string& line) {
     std::printf("%s\n", line.c_str());
-    std::fflush(stdout);
+    satellite::io::written(stdout, std::fflush(stdout));
 }
 
 std::string slotLabel(size_t slot) { return "slot " + std::to_string(slot); }
@@ -241,7 +247,7 @@ void printSummary(const Timeline& timeline, const PauseDetector& detector,
 
 int monitor(const Options& options, GetStateFn getState) {
     const Timeline timeline{Clock::now(), WallClock::now()};
-    PauseDetector detector(SLOT_COUNT, options.gapMs);
+    PauseDetector detector(options.gapMs);
     printLine(stampAt(timeline, 0.0) + " start, " + fixed(options.secs, 1) +
               " s, pauses of at least " + fixed(options.gapMs, 1) + " ms");
     const SweepStats stats =
@@ -256,7 +262,7 @@ int monitor(const Options& options, GetStateFn getState) {
 int main(int argc, char** argv) {
     const ParsedOptions parsed = parseOptions(argc, argv);
     if (!parsed.error.empty()) {
-        std::fprintf(stderr, "%s\n", parsed.error.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "%s\n", parsed.error.c_str()));
         printUsage(stderr);
         return USAGE_EXIT;
     }
@@ -266,7 +272,7 @@ int main(int argc, char** argv) {
     }
     const GetStateFn getState = loadGetState();
     if (getState == nullptr) {
-        std::fprintf(stderr, "could not load XInputGetState from xinput1_4.dll\n");
+        satellite::io::stderrWritten(std::fprintf(stderr, "could not load XInputGetState from xinput1_4.dll\n"));
         return LOAD_FAILED_EXIT;
     }
     return monitor(parsed.options, getState);

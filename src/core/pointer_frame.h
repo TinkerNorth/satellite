@@ -3,13 +3,14 @@
 
 #include "types.h"
 
+#include <cstdint>
 #include <algorithm>
 #include <array>
 #include <cstddef>
 
 namespace satellite {
 
-enum class PointerEventKind { Move, LeftButton, RightButton, MiddleButton, Wheel };
+enum class PointerEventKind : uint8_t { Move, LeftButton, RightButton, MiddleButton, Wheel };
 
 struct PointerEvent {
     PointerEventKind kind = PointerEventKind::Move;

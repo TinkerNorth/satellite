@@ -419,7 +419,15 @@ HelperClient::HelperClient()
 HelperClient::~HelperClient() {
     HelperClient* self = this;
     g_connectOnInstall.compare_exchange_strong(self, nullptr);
-    shutdown();
+    try {
+        shutdown();
+    } catch (const std::exception&) {
+        // The shutdown request could not be built or read (strings are the
+        // only part that allocates). The helper exits on its own when
+        // satellite does (its parent watch), so the channel is just dropped.
+        std::lock_guard<TrackedMutex> lk(mtx_);
+        setChannelLocked(nullptr);
+    }
     CloseHandle(cancel_);
     CloseHandle(connectDone_);
 }

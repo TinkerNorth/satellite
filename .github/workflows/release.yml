@@ -2,38 +2,50 @@ name: Release
 
 on:
   push:
-    # Bare MAJOR.MINOR.PATCH tags: org convention for the product repos,
-    # because dish-android's pipeline requires bare tags. Every version
-    # consumer below still tolerates a legacy v prefix by stripping it.
-    tags: ["[0-9]*"]
+    # Bare MAJOR.MINOR.PATCH tags, the fleet's convention (a prerelease such
+    # as 1.2.3-rc.1 matches too and publishes marked as a prerelease).
+    tags: ["[0-9]*.[0-9]*.[0-9]*"]
   workflow_dispatch:
     inputs:
       tag:
         description: "Tag to release (must already exist)"
         required: true
 
-# Builds release artifacts on all three target platforms in parallel:
+# Every step reads the tag from this variable, never from an expression
+# written into a script, so a dispatched tag input cannot inject shell.
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+# Builds release artifacts on all three target platforms in parallel, each
+# through the script and preset its pull-request lane runs (the lanes are
+# named per job below), so what a tag builds has already been built,
+# installed and launched on the pull request that changed it:
 #
 #   * Windows: builds satellite.exe under MSVC + vcpkg (hardened: CFG + CET +
-#     Spectre), then runs Inno Setup to produce SatelliteSetup.exe, and proves
-#     the installer with a silent install/launch/repair/uninstall round-trip
-#     (driver skipped via /VIGEM=skip). Code-signed if WIN_SIGN_CERT_BASE64 +
-#     WIN_SIGN_PASSWORD are set; signed builds carry the UIAccess manifest and
-#     are smoke-tested from Program Files.
-#   * macOS:   builds the *stub* satellite.app (no virtual gamepad; see
-#     README "How it works"). Codesigned + notarized if Developer ID secrets
-#     are set.
+#     Spectre; windows-msvc-ci.yml), then scripts/build-installer.ps1 produces
+#     SatelliteSetup.exe, and the silent install/launch/repair/uninstall
+#     round-trip proves it (driver skipped via /VIGEM=skip). Code-signed if
+#     WIN_SIGN_CERT_BASE64 + WIN_SIGN_PASSWORD are set; signed builds carry
+#     the UIAccess manifest and are smoke-tested from Program Files.
+#   * macOS:   builds the *stub* satellite.app (no virtual gamepad: no
+#     entitled build has shipped) with scripts/package-macos.sh (macos-ci.yml
+#     bundle job). Codesigned + notarized if Developer ID secrets are set.
 #   * Linux:   packages .deb in a debian:trixie container and .rpm in a
-#     fedora:42 container, so each distro's own dependency scanner writes the
-#     Depends/Requires (a single Ubuntu-built package gets both wrong), plus
-#     an AppImage with zsync self-update metadata on the 22.04 glibc floor.
-#     The .deb and .rpm jobs install their own package and launch it before
-#     uploading; nothing else can catch a missing runtime dependency.
+#     fedora:44 container (linux-ci.yml deb and rpm jobs), so each distro's
+#     own dependency scanner writes the Depends/Requires (a single
+#     Ubuntu-built package gets both wrong), plus an AppImage with zsync
+#     self-update metadata on the 22.04 glibc floor (linux-ci.yml appimage
+#     job). The .deb and .rpm jobs install their own package and launch it
+#     before uploading; nothing else can catch a missing runtime dependency.
 #
-# Before any artifact is uploaded, the `gates` job re-runs every PR-time
-# check (action-pin lint, allowlist expiry, OSV-Scanner, gitleaks) against
-# the tagged commit. The `harden` job (the shared _release_harden.yml) then
-# scans, signs, generates SBOMs, and produces SHA256SUMS.
+# Order: the tag is checked against /VERSION and CHANGELOG.md, every PR-time
+# check re-runs against the tagged commit (`gates`), the builds run, the
+# `harden` job (the shared _release_harden.yml) scans, signs, generates SBOMs
+# and produces SHA256SUMS, the release is uploaded as a DRAFT, the
+# measurements are attached, and only then is it flipped to published.
+# GitHub never points releases/latest at a draft, so the AppImage zsync
+# pattern and anyone scripting `releases/latest` see either the old release
+# or the complete new one, never a half-uploaded one.
 #
 # Alongside each versioned artifact, the shipping platforms stage a second
 # copy under a version-less STABLE NAME:
@@ -49,13 +61,8 @@ on:
 # consumer of that permalink. The stable copies flow through the same
 # harden job, so SHA256SUMS and the cosign signatures cover them too.
 #
-# The release is uploaded as a DRAFT and flipped to published afterwards:
-# GitHub never points releases/latest at a draft, so the AppImage zsync
-# pattern and anyone scripting `releases/latest` see either the old release
-# or the complete new one, never a half-uploaded one.
-#
 # Prerelease tags (1.2.3-rc.1) publish marked as prerelease and skip the
-# APT/DNF repos; package managers never see them.
+# APT/DNF/pacman repos; package managers never see them.
 #
 #   (scan/SBOM/cosign pins live in _release_harden.yml)
 
@@ -70,23 +77,39 @@ concurrency:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
+  # The tag names the version the tree says it is. A tag pushed on the
+  # wrong commit, or before the bump PR merged, stops here, before any
+  # artifact is built.
+  # ─────────────────────────────────────────────────────────────────────
+  tag-version:
+    name: Tag matches VERSION and CHANGELOG
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Compare the tag with /VERSION and the CHANGELOG heading
+        run: bash scripts/check-version-consistency.sh --tag "$TAG"
+
+  # ─────────────────────────────────────────────────────────────────────
   # Re-run all PR-time gates against the tagged commit. If any of these
   # fail, none of the build / sign / publish jobs run.
   # ─────────────────────────────────────────────────────────────────────
   gates:
     name: PR-time gates against tag
+    needs: [tag-version]
     permissions:
       contents: read
       pull-requests: read
-      security-events: write
     uses: ./.github/workflows/_security.yml
     with:
+      osv_scan_paths: .
       osv_lockfile_script: scripts/vendored-osv-lockfile.sh
-      osv_config: osv-scanner.toml
-      gitleaks_enabled: true
-      dependency_review_enabled: false # PR-only by definition
-      action_pin_lint_enabled: true
-      allowlist_expiry_enabled: true
+      dependency_review_enabled: true # skipped on a tag: it reviews a pull request's changes
 
   # ─────────────────────────────────────────────────────────────────────
   # Signing-secret report. Advisory by default: missing secrets downgrade
@@ -106,6 +129,7 @@ jobs:
         id: check
         env:
           ENFORCE: ${{ vars.ENFORCE_RELEASE_SIGNING }}
+          REF_TYPE: ${{ github.ref_type }}
           WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
           WIN_SIGN_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
           DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
@@ -131,24 +155,24 @@ jobs:
 
           echo "signed=false" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.ref_type }}" != "tag" ] || ! [[ "$GITHUB_REF_NAME" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "::notice::Non-tag release run; unsigned fallback permitted. Missing: ${missing[*]}"
+          if [ "${REF_TYPE}" != "tag" ]; then
+            echo "::notice::Dispatched release run; unsigned fallback permitted. Missing: ${missing[*]}"
             exit 0
           fi
-          case "$GITHUB_REF_NAME" in
+          case "$TAG" in
             *-*)
-              echo "::warning::Prerelease tag ${GITHUB_REF_NAME}: unsigned artifacts carry an -unsigned suffix. Missing: ${missing[*]}"
+              echo "::warning::Prerelease tag ${TAG}: unsigned artifacts carry an -unsigned suffix. Missing: ${missing[*]}"
               exit 0
               ;;
           esac
 
           if [ "${ENFORCE:-}" = "true" ]; then
-            echo "::error::Stable tagged release on $GITHUB_REF requires platform signing secrets, but the following are missing: ${missing[*]}"
+            echo "::error::Stable tagged release ${TAG} requires platform signing secrets, but the following are missing: ${missing[*]}"
             echo "::error::Add the missing repository secrets, or unset the ENFORCE_RELEASE_SIGNING repository variable to allow -unsigned artifacts."
             exit 1
           fi
 
-          echo "::warning::Stable tag ${GITHUB_REF_NAME} is being released UNSIGNED; artifacts carry an -unsigned suffix. Missing: ${missing[*]}"
+          echo "::warning::Stable tag ${TAG} is being released UNSIGNED; artifacts carry an -unsigned suffix. Missing: ${missing[*]}"
           echo "::warning::Set the repository variable ENFORCE_RELEASE_SIGNING=true to make this a hard failure once signing certificates are available."
 
       - name: Report crash-reporting readiness (advisory)
@@ -174,8 +198,8 @@ jobs:
   windows:
     name: Build Windows
     needs: [gates, required-secrets]
-    timeout-minutes: 60
-    runs-on: windows-latest
+    timeout-minutes: 90
+    runs-on: windows-2022
     env:
       WIN_SIGN_CERT_BASE64: ${{ secrets.WIN_SIGN_CERT_BASE64 }}
     defaults:
@@ -186,11 +210,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
-      # MSVC build (hardened: CFG + CET + Spectre). Dependencies come from
-      # vcpkg's static triplet so their CRT linkage matches the app's /MT.
-      # windows-latest ships VS (+ Spectre-mitigated libs) and a vcpkg
-      # checkout; windows-msvc-ci.yml A/B-validates this same path on every PR.
+      - name: Check out vcpkg at the manifest's baseline
+        shell: pwsh
+        run: ./scripts/setup-vcpkg.ps1
+
+      # The windows-msvc preset windows-msvc-ci.yml builds on every pull
+      # request (hardened: CFG + CET + Spectre), plus the release's version,
+      # its DSN, and the UIAccess manifest when the build will be signed.
       - name: Build satellite.exe (MSVC + vcpkg, hardened)
         shell: pwsh
         env:
@@ -198,111 +226,52 @@ jobs:
           # exposed to forks, so a fork build carries no DSN and cannot report.
           SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
-          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $generator = ./scripts/windows-vs-generator.ps1
-          $disp = ("${{ inputs.tag || github.ref_name }}") -replace '^v',''
+          $display = $env:TAG -replace '^v', ''
           $uiAccess = @()
           if ($env:WIN_SIGN_CERT_BASE64) { $uiAccess = @('-DSATELLITE_UIACCESS=ON') }
-          cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$disp" -DSATELLITE_SENTRY_DSN="$env:SATELLITE_SENTRY_DSN" @uiAccess
+          cmake --preset windows-msvc -G $generator -DSATELLITE_RELEASE_VERSION="$display" -DSATELLITE_SENTRY_DSN="$env:SATELLITE_SENTRY_DSN" @uiAccess
           cmake --build --preset windows-msvc --target satellite
           if (-not (Test-Path satellite.exe)) { throw "MSVC build did not produce satellite.exe at repo root" }
           if (-not (Test-Path crashpad_handler.exe)) { throw "crashpad_handler.exe was not staged beside satellite.exe" }
           if (-not (Test-Path crashpad_wer.dll)) { throw "crashpad_wer.dll was not staged beside satellite.exe" }
 
-      # Best effort: a symbol-upload hiccup must not fail a release. The org
-      # and project fall back to the numeric ids inside the DSN, which the
-      # Sentry API accepts in place of slugs.
       - name: Upload debug symbols to Sentry
-        continue-on-error: true
-        shell: pwsh
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-        run: |
-          if (-not $env:SENTRY_AUTH_TOKEN -or -not $env:SENTRY_DSN) {
-            Write-Host "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
-            exit 0
-          }
-          if (-not $env:SENTRY_ORG -and ($env:SENTRY_DSN -match '@o(\d+)\.')) { $env:SENTRY_ORG = $Matches[1] }
-          if (-not $env:SENTRY_PROJECT) { $env:SENTRY_PROJECT = ($env:SENTRY_DSN -split '/')[-1] }
-          $cli = Join-Path $env:RUNNER_TEMP 'sentry-cli.exe'
-          Invoke-WebRequest -Uri 'https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Windows-x86_64.exe' -OutFile $cli
-          $hash = (Get-FileHash -Algorithm SHA256 $cli).Hash.ToLowerInvariant()
-          if ($hash -ne '8643986aec8d8cf8d69cd476d67427578e5dbbda378eba506d199681082abe5a') { throw "sentry-cli checksum mismatch: $hash" }
-          & $cli debug-files upload --include-sources satellite.exe satellite.pdb
-          if ($LASTEXITCODE -ne 0) { throw "sentry-cli exited $LASTEXITCODE" }
-
-      # installer.iss bundles the ViGEmBus driver and the HIDMaestro helper,
-      # neither of which is committed -- fetch + hash-verify them first (the
-      # documented `pwsh scripts/fetch-redist.ps1 ; dotnet publish ; iscc`
-      # recipe).
-      - name: Fetch pinned redistributables (ViGEmBus + HIDMaestro)
-        shell: pwsh
-        run: pwsh scripts/fetch-redist.ps1
+        run: bash scripts/sentry-cli.sh upload-symbols satellite.exe satellite.pdb
 
       - name: Set up .NET SDK
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: "10.0.x"
 
-      - name: Build HIDMaestro helper (dotnet publish)
+      - name: Install the pinned Inno Setup
         shell: pwsh
         run: |
-          dotnet publish helper/hidmaestro/satellite-hm-helper.csproj -c Release
-          if (-not (Test-Path "helper/hidmaestro/bin/Release/net10.0-windows10.0.26100.0/win-x64/publish/satellite-hm-helper.exe")) {
-            throw "dotnet publish did not produce satellite-hm-helper.exe"
-          }
+          $iscc = ./scripts/install-inno-setup.ps1
+          Add-Content $env:GITHUB_ENV "SATELLITE_ISCC=$iscc"
 
-      - name: Verify the helper carries the pinned SDK
+      # scripts/build-installer.ps1, as windows-msvc-ci.yml runs it: fetch and
+      # verify the redistributables, publish the HIDMaestro helper and hold
+      # it to driver_pins.h, sign the four binaries (when the certificate is
+      # configured), compile the installer, sign it.
+      - name: Build the installer
         shell: pwsh
-        run: pwsh scripts/verify-helper-sdk.ps1
-
-      - name: Sign binaries before packaging (if cert configured)
-        if: ${{ env.WIN_SIGN_CERT_BASE64 != '' }}
         env:
           SATELLITE_SIGN_PFX_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
-        shell: pwsh
         run: |
-          $cert = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
-          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WIN_SIGN_CERT_BASE64))
-          $env:SATELLITE_SIGN_PFX = $cert
-          ./scripts/sign.ps1 -Files satellite.exe, crashpad_handler.exe, crashpad_wer.dll, 'helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish\satellite-hm-helper.exe'
-          $exe = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Resolve-Path satellite.exe).Path))
-          if (-not $exe.Contains('uiAccess="true"')) {
-            throw 'satellite.exe does not carry uiAccess="true"; the -DSATELLITE_UIACCESS=ON build did not take effect'
+          $uiAccess = @{}
+          if ($env:WIN_SIGN_CERT_BASE64) {
+            $cert = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
+            [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WIN_SIGN_CERT_BASE64))
+            $env:SATELLITE_SIGN_PFX = $cert
+            $uiAccess = @{ UiAccess = $true }
           }
-
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress
-
-      - name: Run Inno Setup
-        shell: pwsh
-        run: |
-          $num = (("${{ inputs.tag || github.ref_name }}") -replace '^v','') -replace '[-+].*$',''
-          $uiAccess = @()
-          if ($env:WIN_SIGN_CERT_BASE64) { $uiAccess = @('/DUiAccess=1') }
-          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=$num" @uiAccess installer.iss
-          if (-not (Test-Path "dist/SatelliteSetup.exe")) {
-            throw "iscc did not produce dist/SatelliteSetup.exe"
-          }
-
-      - name: Sign installer (if cert configured)
-        if: ${{ env.WIN_SIGN_CERT_BASE64 != '' }}
-        env:
-          WIN_SIGN_PASSWORD: ${{ secrets.WIN_SIGN_PASSWORD }}
-        shell: pwsh
-        run: |
-          $cert = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
-          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WIN_SIGN_CERT_BASE64))
-          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.0.*\x64\signtool.exe" |
-            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
-            Select-Object -First 1
-          if ($null -eq $signtool) { throw "signtool.exe not found under Windows Kits" }
-          & $signtool.FullName sign /f $cert /p $env:WIN_SIGN_PASSWORD `
-            /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
-            dist/SatelliteSetup.exe
+          ./scripts/build-installer.ps1 -Iscc $env:SATELLITE_ISCC @uiAccess
 
       # The same class of assertions dish-windows runs, against the artifact
       # that is about to be published rather than a rebuild of it. Both
@@ -312,49 +281,67 @@ jobs:
         shell: pwsh
         run: ./scripts/test-installer-roundtrip.ps1 -Setup dist/SatelliteSetup.exe -UiAccess:([bool]$env:WIN_SIGN_CERT_BASE64)
 
-      - name: Stage
-        shell: bash
+      # What the installer carries: the vcpkg ports the build resolved, the
+      # vendored components, HIDMaestro and ViGEmBus as bundled.
+      - name: Components SBOM
+        env:
+          SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
+          sbom_args=()
+          if [ -n "${SATELLITE_SENTRY_DSN:-}" ]; then sbom_args=(--sentry); fi
+          python scripts/write-sbom.py --lane windows "${sbom_args[@]+"${sbom_args[@]}"}" \
+            --vcpkg-installed build-msvc/vcpkg_installed --out dist/satellite-windows.components.spdx.json
+          python scripts/check-sbom.py --lane windows "${sbom_args[@]+"${sbom_args[@]}"}" \
+            dist/satellite-windows.components.spdx.json
+
+      - name: Stage
+        run: |
           suffix=""
           if [ -z "${WIN_SIGN_CERT_BASE64:-}" ]; then
             suffix="-unsigned"
           fi
           mkdir -p stage
-          cp dist/SatelliteSetup.exe "stage/SatelliteSetup-${tag}${suffix}.exe"
+          cp dist/SatelliteSetup.exe "stage/SatelliteSetup-${TAG}${suffix}.exe"
           # Stable-name copy: the /releases/latest/download/ permalink target.
           # Never carries the version or the -unsigned suffix; the download
           # pages declare signing state per product instead of via filename.
           cp dist/SatelliteSetup.exe stage/SatelliteSetup.exe
+          cp dist/satellite-windows.components.spdx.json stage/
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-windows
           path: stage/
+          if-no-files-found: error
 
   macos:
     name: Build macOS (stub)
     needs: [gates, required-secrets]
-    timeout-minutes: 30
+    timeout-minutes: 45
+    # macos-15 with Xcode 16.4 named: see macos-ci.yml for why this is not
+    # macos-26 (the bundle's floor would move to macOS 26).
     runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Install dependencies
-        run: brew install cmake pkg-config libsodium opus
+        run: |
+          for formula in cmake pkg-config libsodium opus create-dmg; do
+            brew list --versions "$formula" > /dev/null 2>&1 || brew install "$formula"
+          done
 
-      - name: Build satellite.app (stub)
+      - name: Build satellite.app (stub, preset package)
         env:
           # Empty for anything but a release from this repo: secrets are not
           # exposed to forks, so a fork build carries no DSN and cannot report.
           SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
-          cmake --build build --config Release --target satellite -j "$(sysctl -n hw.ncpu)"
+        run: SATELLITE_VERSION="$TAG" bash scripts/package-macos.sh build
 
       - name: Sign + notarize (if Developer ID configured)
         id: sign
@@ -391,59 +378,32 @@ jobs:
           xcrun stapler validate satellite.app
           echo "present=true" >> "$GITHUB_OUTPUT"
 
-      - name: Build .dmg (create-dmg)
-        id: dmg
+      - name: Stage the .dmg and .zip
         env:
           SIGN_PRESENT: ${{ steps.sign.outputs.present }}
         run: |
-          set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
           suffix=""
           if [ "${SIGN_PRESENT}" != "true" ]; then
             suffix="-unsigned"
           fi
-          brew install --quiet create-dmg
-          mkdir -p stage
-          # `create-dmg` produces a single mountable disk image with the
-          # bundle pre-placed and a /Applications symlink: the standard
-          # drag-to-Applications experience. The .app inside is already
-          # codesigned + notarized + stapled (see the `sign` step above),
-          # so the DMG itself only needs to wrap it; Gatekeeper checks
-          # the .app at first launch.
-          create-dmg \
-            --volname "Satellite ${tag}" \
-            --window-size 540 360 \
-            --icon-size 128 \
-            --icon "satellite.app" 130 180 \
-            --app-drop-link 410 180 \
-            --no-internet-enable \
-            "stage/satellite-macos-stub-${tag}${suffix}.dmg" \
-            satellite.app
+          bash scripts/package-macos.sh stage "$TAG" "$suffix"
 
-      - name: Stage (legacy .zip alongside the .dmg)
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          suffix=""
-          if [ "${{ steps.sign.outputs.present }}" != "true" ]; then
-            suffix="-unsigned"
-          fi
-          mkdir -p stage
-          # Keep the .zip around for downloaders that don't deal with
-          # .dmg (CI smoke tests, scripts that just want the .app).
-          ditto -c -k --sequesterRsrc --keepParent satellite.app \
-            "stage/satellite-macos-stub-${tag}${suffix}.zip"
+      - name: Mount the .dmg and run its app
+        run: bash scripts/package-macos.sh check
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-macos
           path: stage/
+          if-no-files-found: error
 
   # =========================================================================
   # .deb: built in a debian:trixie container so dpkg-shlibdeps computes the
   # Depends against Debian's own sonames. The previous single-host build
   # emitted Ubuntu `t64` package names in Depends, which resolve on no Debian
   # release; CPACK_DEBIAN_PACKAGE_SHLIBDEPS reads the build host, so the
-  # build host has to be the target distro.
+  # build host has to be the target distro. The scripts are linux-ci.yml's
+  # deb job's.
   # =========================================================================
   deb:
     name: Build .deb (Debian 13)
@@ -456,145 +416,34 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Install build and packaging dependencies
-        run: |
-          set -eux
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            git ca-certificates \
-            build-essential cmake pkg-config curl \
-            libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
-            libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
-            dpkg-dev fakeroot file gzip lintian
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
-      - name: Build satellite
+      - name: Install build and packaging dependencies
+        run: bash scripts/install-package-deps.sh deb
+
+      - name: Build the .deb
         env:
           # Empty for anything but a release from this repo: secrets are not
           # exposed to forks, so a fork build carries no DSN and cannot report.
           SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
-          cmake --build build --config Release --target satellite -j "$(nproc)"
+        run: SATELLITE_VERSION="$TAG" bash scripts/build-deb.sh
 
-
-      # Best effort: a symbol-upload hiccup must not fail a release. The org
-      # and project fall back to the numeric ids inside the DSN, which the
-      # Sentry API accepts in place of slugs. The binary is uploaded before
-      # packaging strips it.
+      # The unstripped binary at the repo root; cpack strips only its staged
+      # copy.
       - name: Upload debug symbols to Sentry
-        continue-on-error: true
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
-            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
-            exit 0
-          fi
-          if [ -z "${SENTRY_ORG:-}" ]; then
-            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
-          fi
-          if [ -z "${SENTRY_PROJECT:-}" ]; then
-            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
-          fi
-          cli="${RUNNER_TEMP}/sentry-cli"
-          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
-          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
-          chmod +x "$cli"
-          "$cli" debug-files upload --include-sources satellite
+        run: bash scripts/sentry-cli.sh upload-symbols satellite
 
-      - name: Package (.deb via CPack)
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          cpack -G DEB -B "${RUNNER_TEMP}/cpack" --config build/CPackConfig.cmake
-          cp "${RUNNER_TEMP}"/cpack/satellite_*_amd64.deb dist/
-          ls -l dist/
-
-      - name: lintian
-        run: lintian --fail-on error --tag-display-limit 0 dist/*.deb
-
-      - name: Assert package contents and scriptlets
-        run: |
-          set -euo pipefail
-          contents="$(dpkg-deb -c dist/*.deb)"
-          for path in \
-            ./usr/bin/satellite \
-            ./usr/lib/udev/rules.d/70-satellite-uinput.rules \
-            ./usr/lib/modules-load.d/satellite.conf \
-            ./usr/share/applications/satellite.desktop \
-            ./usr/share/metainfo/io.github.tinkernorth.satellite.metainfo.xml \
-            ./usr/share/pixmaps/satellite.png
-          do
-            grep -qE " ${path}\$" <<<"${contents}" \
-              || { echo "::error::${path} missing from the .deb"; exit 1; }
-          done
-          payload="$(mktemp -d)"
-          dpkg-deb -x dist/*.deb "$payload"
-          bash scripts/check-web-payload.sh "$payload/usr/share/satellite/web"
-          # Without the reload + modprobe a fresh install cannot open
-          # /dev/uinput until the next reboot.
-          extract="$(mktemp -d)"
-          dpkg-deb -e dist/*.deb "$extract"
-          grep -q 'udevadm control' "$extract/postinst" \
-            || { echo "::error::.deb postinst carries no udev reload"; exit 1; }
-          grep -q 'modprobe uinput' "$extract/postinst" \
-            || { echo "::error::.deb postinst carries no modprobe uinput"; exit 1; }
-
-      # Nothing else can stand in for this: unit tests, lints and a contents
-      # check all pass against a build tree, and a build tree is exactly what
-      # hides a missing runtime dependency.
-      - name: Install the package and launch it
-        run: |
-          set -euo pipefail
-          apt-get install -y ./dist/*.deb
-          if ldd /usr/bin/satellite | grep -i 'not found'; then
-            echo "::error::installed satellite has unresolved shared libraries"
-            exit 1
-          fi
-          # No display and no tray host here: satellite is built to run
-          # headless (fallback verified by linux-ci) and to exit 0 on SIGTERM.
-          set +e
-          satellite >/tmp/launch.log 2>&1 &
-          app=$!
-          sleep 10
-          started=0
-          kill -0 "$app" 2>/dev/null && started=1
-          if [ "$started" = 1 ]; then
-            kill -TERM "$app"
-            waited=0
-            while [ "$waited" -lt 15 ] && kill -0 "$app" 2>/dev/null; do
-              sleep 1
-              waited=$((waited + 1))
-            done
-            kill -0 "$app" 2>/dev/null && kill -KILL "$app"
-          fi
-          wait "$app"
-          rc=$?
-          set -e
-          cat /tmp/launch.log || true
-          if grep -qiE 'error while loading shared libraries|cannot open shared object' /tmp/launch.log; then
-            echo "::error::the installed package cannot load its shared libraries"
-            exit 1
-          fi
-          if [ "$started" != 1 ]; then
-            echo "::error::satellite exited on its own (${rc}) instead of staying up"
-            exit 1
-          fi
-          if [ "$rc" != 0 ]; then
-            echo "::error::satellite did not exit 0 on SIGTERM (got ${rc})"
-            exit 1
-          fi
-          echo "::notice::satellite came up headless, shut down on SIGTERM and exited 0"
+      - name: Check, install and launch the .deb
+        run: bash scripts/check-package.sh deb "$(ls dist/satellite_*_amd64.deb)"
 
       # Stable-name copy for the /releases/latest/download/ permalink; the
       # dash (vs the versioned name's underscores) keeps it clear of the
@@ -605,146 +454,51 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-deb
-          path: dist/*.deb
+          path: |
+            dist/*.deb
+            dist/*.components.spdx.json
           if-no-files-found: error
 
   # =========================================================================
-  # .rpm: same reasoning in a fedora:42 container; rpmbuild's soname scanner
-  # writes the Requires against Fedora's packages.
+  # .rpm: same reasoning in a fedora:44 container; rpmbuild's soname scanner
+  # writes the Requires against Fedora's packages. linux-ci.yml's rpm job.
   # =========================================================================
   rpm:
-    name: Build .rpm (Fedora)
+    name: Build .rpm (Fedora 44)
     needs: [gates, required-secrets]
     runs-on: ubuntu-24.04
-    container: fedora:42
+    container: fedora:44
     timeout-minutes: 30
     defaults:
       run:
         shell: bash
     steps:
-      - name: Install build and packaging dependencies
-        run: |
-          set -eux
-          dnf -y install --setopt=install_weak_deps=False \
-            git-core ca-certificates \
-            gcc-c++ cmake make pkgconf-pkg-config rpm-build \
-            libsodium-devel openssl-devel libcurl-devel opus-devel \
-            gtk3-devel libayatana-appindicator-gtk3-devel libnotify-devel \
-            gzip cpio gawk diffutils
-          dnf -y install --allowerasing curl
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
-      - name: Build satellite
+      - name: Install build and packaging dependencies
+        run: bash scripts/install-package-deps.sh rpm
+
+      - name: Build the .rpm
         env:
           # Empty for anything but a release from this repo: secrets are not
           # exposed to forks, so a fork build carries no DSN and cannot report.
           SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSATELLITE_RELEASE_VERSION="${tag#v}" -DSATELLITE_SENTRY_DSN="${SATELLITE_SENTRY_DSN}"
-          cmake --build build --config Release --target satellite -j "$(nproc)"
+        run: SATELLITE_VERSION="$TAG" bash scripts/build-rpm.sh
 
-
-      # Best effort: a symbol-upload hiccup must not fail a release. The org
-      # and project fall back to the numeric ids inside the DSN, which the
-      # Sentry API accepts in place of slugs. The binary is uploaded before
-      # packaging strips it.
       - name: Upload debug symbols to Sentry
-        continue-on-error: true
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
-            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
-            exit 0
-          fi
-          if [ -z "${SENTRY_ORG:-}" ]; then
-            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
-          fi
-          if [ -z "${SENTRY_PROJECT:-}" ]; then
-            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
-          fi
-          cli="${RUNNER_TEMP}/sentry-cli"
-          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
-          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
-          chmod +x "$cli"
-          "$cli" debug-files upload --include-sources satellite
+        run: bash scripts/sentry-cli.sh upload-symbols satellite
 
-      - name: Package (.rpm via CPack)
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          cpack -G RPM -B "${RUNNER_TEMP}/cpack" --config build/CPackConfig.cmake
-          cp "${RUNNER_TEMP}"/cpack/satellite-*.x86_64.rpm dist/
-          ls -l dist/
-
-      - name: Assert package contents and scriptlets
-        run: |
-          set -euo pipefail
-          contents="$(rpm -qlp dist/*.rpm)"
-          scripts="$(rpm -qp --scripts dist/*.rpm)"
-          printf '%s\n' "${contents}"
-          rpm -qp --requires dist/*.rpm
-          grep -qx '/usr/lib/udev/rules.d/70-satellite-uinput.rules' <<<"${contents}" \
-            || { echo "::error::udev rule missing or at the wrong path"; exit 1; }
-          grep -qx '/usr/lib/modules-load.d/satellite.conf' <<<"${contents}" \
-            || { echo "::error::modules-load entry missing"; exit 1; }
-          grep -q 'udevadm control' <<<"${scripts}" \
-            || { echo "::error::rpm carries no udev reload scriptlet"; exit 1; }
-          grep -q 'modprobe uinput' <<<"${scripts}" \
-            || { echo "::error::rpm carries no modprobe uinput scriptlet"; exit 1; }
-          payload="$(mktemp -d)"
-          rpm2cpio dist/*.rpm | (cd "$payload" && cpio -idm --quiet)
-          bash scripts/check-web-payload.sh "$payload/usr/share/satellite/web"
-
-      - name: Install the package and launch it
-        run: |
-          set -euo pipefail
-          dnf -y install ./dist/*.rpm
-          if ldd /usr/bin/satellite | grep -i 'not found'; then
-            echo "::error::installed satellite has unresolved shared libraries"
-            exit 1
-          fi
-          set +e
-          satellite >/tmp/launch.log 2>&1 &
-          app=$!
-          sleep 10
-          started=0
-          kill -0 "$app" 2>/dev/null && started=1
-          if [ "$started" = 1 ]; then
-            kill -TERM "$app"
-            waited=0
-            while [ "$waited" -lt 15 ] && kill -0 "$app" 2>/dev/null; do
-              sleep 1
-              waited=$((waited + 1))
-            done
-            kill -0 "$app" 2>/dev/null && kill -KILL "$app"
-          fi
-          wait "$app"
-          rc=$?
-          set -e
-          cat /tmp/launch.log || true
-          if grep -qiE 'error while loading shared libraries|cannot open shared object' /tmp/launch.log; then
-            echo "::error::the installed package cannot load its shared libraries"
-            exit 1
-          fi
-          if [ "$started" != 1 ]; then
-            echo "::error::satellite exited on its own (${rc}) instead of staying up"
-            exit 1
-          fi
-          if [ "$rc" != 0 ]; then
-            echo "::error::satellite did not exit 0 on SIGTERM (got ${rc})"
-            exit 1
-          fi
-          echo "::notice::satellite came up headless, shut down on SIGTERM and exited 0"
+      - name: Check, install and launch the .rpm
+        run: bash scripts/check-package.sh rpm "$(ls dist/satellite-*.x86_64.rpm)"
 
       # Stable-name copy for the /releases/latest/download/ permalink.
       - name: Stage stable-name alias
@@ -753,13 +507,15 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-rpm
-          path: dist/*.rpm
+          path: |
+            dist/*.rpm
+            dist/*.components.spdx.json
           if-no-files-found: error
 
   # =========================================================================
   # AppImage: every other distro. ubuntu-22.04 because an AppImage's floor is
   # the glibc it linked against, and 22.04's 2.35 covers every supported
-  # desktop.
+  # desktop. linux-ci.yml's appimage job.
   # =========================================================================
   appimage:
     name: Build AppImage
@@ -771,56 +527,31 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config \
-            libsodium-dev libssl-dev libcurl4-openssl-dev libopus-dev \
-            libayatana-appindicator3-dev libgtk-3-dev libnotify-dev \
-            file wget
+        run: bash scripts/install-package-deps.sh appimage
 
-      # The whole recipe (build, linuxdeploy, zsync normalisation, stable-name
-      # copy) lives in scripts/build-appimage.sh so a local AppImage and the
-      # released one come off the same path (the dish-linux model).
+      # The whole recipe (build, linuxdeploy, content check, zsync
+      # normalisation, stable-name copy) lives in scripts/build-appimage.sh
+      # so a local AppImage and the released one come off the same path.
       - name: Build AppImage
         env:
           # Empty for anything but a release from this repo: secrets are not
           # exposed to forks, so a fork build carries no DSN and cannot report.
           SATELLITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          SATELLITE_VERSION="${tag#v}" bash scripts/build-appimage.sh
+        run: SATELLITE_VERSION="$TAG" bash scripts/build-appimage.sh
 
-      # Best effort: a symbol-upload hiccup must not fail a release. The org
-      # and project fall back to the numeric ids inside the DSN, which the
-      # Sentry API accepts in place of slugs. The binary is uploaded before
-      # packaging strips it.
+      - name: The AppImage stays up headless
+        run: bash scripts/smoke-alive.sh "${RUNNER_TEMP}/appimage-content/squashfs-root/AppRun" 45
+
       - name: Upload debug symbols to Sentry
-        continue-on-error: true
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
-            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping symbol upload."
-            exit 0
-          fi
-          if [ -z "${SENTRY_ORG:-}" ]; then
-            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
-          fi
-          if [ -z "${SENTRY_PROJECT:-}" ]; then
-            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
-          fi
-          cli="${RUNNER_TEMP}/sentry-cli"
-          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
-          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
-          chmod +x "$cli"
-          "$cli" debug-files upload --include-sources satellite
+        run: bash scripts/sentry-cli.sh upload-symbols satellite
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -843,7 +574,6 @@ jobs:
     with:
       artifact-pattern: build-*
       product: satellite
-      grype-ignore-name-regex: "(?i)^satellite(setup)?$"
 
   # ─────────────────────────────────────────────────────────────────────
   # SLSA L3 provenance generation. The reusable workflow runs in its own
@@ -930,7 +660,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           gh release edit "$TAG" --draft=false
@@ -948,36 +677,15 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Create the release and associate commits
-        continue-on-error: true
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SENTRY_AUTH_TOKEN:-}" ] || [ -z "${SENTRY_DSN:-}" ]; then
-            echo "::notice::SENTRY_AUTH_TOKEN or SENTRY_DSN unset; skipping the Sentry release."
-            exit 0
-          fi
-          if [ -z "${SENTRY_ORG:-}" ]; then
-            SENTRY_ORG="$(sed -nE 's#.*@o([0-9]+)\..*#\1#p' <<<"$SENTRY_DSN")"; export SENTRY_ORG
-          fi
-          if [ -z "${SENTRY_PROJECT:-}" ]; then
-            SENTRY_PROJECT="${SENTRY_DSN##*/}"; export SENTRY_PROJECT
-          fi
-          tag="${{ inputs.tag || github.ref_name }}"
-          version="satellite@${tag#v}"
-          cli="${RUNNER_TEMP}/sentry-cli"
-          curl -fsSL --retry 3 -o "$cli" https://github.com/getsentry/sentry-cli/releases/download/3.7.0/sentry-cli-Linux-x86_64
-          echo "cec71d46a7cc394c94b6e75f1601985c710d457376c546ef3975567b3671563b  $cli" | sha256sum -c -
-          chmod +x "$cli"
-          "$cli" releases new "$version"
-          "$cli" releases set-commits "$version" --auto
-          "$cli" releases finalize "$version"
-          "$cli" deploys new -e production -r "$version"
+        run: bash scripts/sentry-cli.sh release "satellite@${TAG#v}"
 
   repos:
     name: Publish package repositories

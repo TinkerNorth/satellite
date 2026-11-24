@@ -20,7 +20,13 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+# The three jobs push to one gh-pages branch in turn; two runs at once would
+# race on it. Never cancelled: a publish half-done is worse than a late one.
+concurrency:
+  group: publish-repos
+  cancel-in-progress: false
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
@@ -42,6 +48,8 @@ jobs:
       - name: Checkout main (for build scripts)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The gh-pages pushes clone with their own token URL.
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           path: main
 
@@ -155,6 +163,8 @@ jobs:
       - name: Checkout main (for build scripts)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The gh-pages pushes clone with their own token URL.
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           path: main
 
@@ -172,9 +182,9 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install createrepo_c + GPG
+      - name: Install createrepo_c, rpmsign + GPG
         if: steps.gate.outputs.skip != 'true'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends createrepo-c gnupg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends createrepo-c rpm gnupg
 
       - name: Import signing key
         if: steps.gate.outputs.skip != 'true'
@@ -249,7 +259,10 @@ jobs:
     needs: [rpm-publish]
     timeout-minutes: 20
     runs-on: ubuntu-24.04
-    container: archlinux:base-devel
+    # A dated snapshot tag rather than the rolling base-devel, so the image
+    # a publish starts from is the one named here; `pacman -Syu` below still
+    # brings it current.
+    container: archlinux:base-devel-20261108.0.623074
     permissions:
       contents: write
     if: ${{ !contains(inputs.tag, '-') }}
@@ -278,6 +291,8 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The gh-pages pushes clone with their own token URL.
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           path: main
 
@@ -289,12 +304,9 @@ jobs:
           printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
           gpg --list-secret-keys --keyid-format=long
 
-      # makepkg refuses to run as root, and the container runs as root:
-      # build as a throwaway user. updpkgsums re-downloads the sources from
-      # the release the publish job just flipped live, so the repo package
-      # is built from (and checksummed against) the published bytes, not a
-      # parallel local copy. -d skips dependency checks: a -bin package()
-      # only copies files, and the depends are runtime-only.
+      # scripts/build-arch-package.sh, the script linux-ci.yml's arch job
+      # runs on every pull request, around the AppImage the release just
+      # published, checked against the release's own SHA256SUMS first.
       - name: Build satellite-bin package
         if: steps.gate.outputs.skip != 'true'
         env:
@@ -302,14 +314,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          useradd -m builder
-          builddir=/home/builder/satellite-bin
-          mkdir -p "$builddir"
-          cp main/packaging/aur/PKGBUILD main/packaging/aur/satellite-bin.install "$builddir/"
-          sed -i "s/^pkgver=.*/pkgver=${version}/; s/^pkgrel=.*/pkgrel=1/" "$builddir/PKGBUILD"
-          chown -R builder:builder "$builddir"
-          su builder -c "cd '$builddir' && updpkgsums && PACKAGER='satellite-release-bot <releases@tinkernorth.invalid>' makepkg -d --noconfirm"
-          ls -l "$builddir"/*.pkg.tar.zst
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          mkdir -p release
+          curl -fsSL --retry 3 -o "release/satellite-${version}-x86_64.AppImage" "${base}/satellite-${version}-x86_64.AppImage"
+          curl -fsSL --retry 3 -o release/SHA256SUMS "${base}/SHA256SUMS"
+          (cd release && sha256sum --check --strict --ignore-missing SHA256SUMS)
+          bash main/scripts/build-arch-package.sh "release/satellite-${version}-x86_64.AppImage" "${version}" /home/builder/satellite-bin
 
       - name: Sign package
         if: steps.gate.outputs.skip != 'true'

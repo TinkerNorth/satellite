@@ -54,7 +54,9 @@ namespace {
 void showFatalError(const wchar_t* title, const wchar_t* heading, const wchar_t* details) {
     TASKDIALOGCONFIG cfg{};
     cfg.cbSize = sizeof(cfg);
-    cfg.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION;
+    cfg.dwFlags =
+        static_cast<TASKDIALOG_FLAGS>(static_cast<unsigned>(TDF_USE_HICON_MAIN) |
+                                      static_cast<unsigned>(TDF_ALLOW_DIALOG_CANCELLATION));
     cfg.pszWindowTitle = title;
     cfg.pszMainInstruction = heading;
     cfg.pszContent = details;
@@ -132,7 +134,8 @@ bool forwardPairUri(const std::string& cmd) {
 // modern dialog rather than MessageBox.
 HRESULT initShellIntegration() {
     const HRESULT hrCoInit =
-        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        CoInitializeEx(nullptr, static_cast<DWORD>(COINIT_APARTMENTTHREADED) |
+                                    static_cast<DWORD>(COINIT_DISABLE_OLE1DDE));
     if (FAILED(hrCoInit)) {
         logMsg(LogLevel::WARN, "startup",
                "CoInitializeEx failed; jump list and toasts may be unavailable");
@@ -268,7 +271,7 @@ void runMessageLoop() {
 // callback can't fire into a torn-down server.
 void stopServers(UpdateService& updateService) {
     wakeReceiver();
-    g_httpServer.stop();
+    adminHttpServer().stop();
     if (g_clientServer) g_clientServer->stop();
     updateService.stop();
     g_updateService = nullptr;

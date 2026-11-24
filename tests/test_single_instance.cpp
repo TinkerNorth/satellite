@@ -394,25 +394,17 @@ static void test_a_satellite_that_never_exits_is_given_up_on() {
 }
 
 int main() {
-    std::cout << "=== test_single_instance ===\n";
-    test_the_first_launch_takes_the_singleton();
-    test_a_live_satellite_takes_the_click();
-    test_a_satellite_on_its_way_out_is_waited_for();
-    test_a_late_answer_still_ends_the_launch();
-    test_a_satellite_whose_loop_starts_late_is_not_taken_for_one_exiting();
-    test_a_tap_that_uipi_refuses_ends_the_launch();
-    test_a_refused_tap_is_followed_by_a_probe();
-    test_only_one_launch_waits();
-    test_a_satellite_still_starting_is_tapped_once_its_window_shows();
-    test_a_satellite_that_never_exits_is_given_up_on();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_single_instance", [] {
+        std::cout << "=== test_single_instance ===\n";
+        test_the_first_launch_takes_the_singleton();
+        test_a_live_satellite_takes_the_click();
+        test_a_satellite_on_its_way_out_is_waited_for();
+        test_a_late_answer_still_ends_the_launch();
+        test_a_satellite_whose_loop_starts_late_is_not_taken_for_one_exiting();
+        test_a_tap_that_uipi_refuses_ends_the_launch();
+        test_a_refused_tap_is_followed_by_a_probe();
+        test_only_one_launch_waits();
+        test_a_satellite_still_starting_is_tapped_once_its_window_shows();
+        test_a_satellite_that_never_exits_is_given_up_on();
+    });
 }

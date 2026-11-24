@@ -28,7 +28,7 @@ inline constexpr std::string_view LOG_LINE_END = "\n";
 
 inline constexpr size_t LOG_LINE_CAPACITY = 640;
 inline constexpr uint64_t LOG_WAKE_DEPTH = LOG_QUEUE_CAPACITY / 4;
-inline constexpr size_t LOG_BATCH_RESERVE = 64 * 1024;
+inline constexpr size_t LOG_BATCH_RESERVE = size_t{64} * 1024;
 
 class ILogSink {
   public:

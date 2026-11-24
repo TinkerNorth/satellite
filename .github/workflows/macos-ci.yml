@@ -6,23 +6,33 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# macos-15, not the fleet's macos-26: the stub bundle links Homebrew's
+# libsodium, OpenSSL and opus, whose bottles on a macOS 26 image are built
+# for macOS 26, so moving the image would raise the shipped bundle's floor
+# from macOS 15.0 (the minos of 2.3.0's binary) to 26. release.yml's macos
+# job stays on the same image for the same reason. Xcode is named, not the
+# image default: 16.4 is the toolchain 2.3.0 shipped from (SDK 15.5).
+env:
+  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 
 jobs:
   ci:
-    name: Build, test, lint, format
-    # Homebrew supports the three current macOS releases and warns on every
-    # command once a runner image ages out of that window (macOS 14 did in
-    # 2026); this lane also builds against that image's SDK (15). Bump this
-    # together with CONTRIBUTING.md.
+    name: Build, test, lint, format (macos)
     runs-on: macos-15
     timeout-minutes: 30
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -33,38 +43,30 @@ jobs:
             brew list --versions "$formula" > /dev/null 2>&1 || brew install "$formula"
           done
 
-      # Same pin as linux-ci.yml: a floating brew clang-format diverges from
-      # the Linux lane on every LLVM bump. venv instead of pipx: the macOS
-      # runner image doesn't guarantee pipx.
-      - name: Install clang-format (pinned)
-        run: |
-          python3 -m venv "$HOME/.clang-format-venv"
-          "$HOME/.clang-format-venv/bin/pip" install clang-format==22.1.4
-          echo "$HOME/.clang-format-venv/bin" >> "$GITHUB_PATH"
-
       - name: Tool versions
         run: |
+          xcodebuild -version
           cmake --version
           clang++ --version
-          clang-format --version
           pkg-config --modversion libsodium
           pkg-config --modversion opus
 
-      # The gate itself lives in scripts/check-format.sh so this workflow,
-      # linux-ci.yml, windows-ci.yml and scripts/ci-local.sh cannot drift on
-      # the file set or the invocation.
+      # The gate lives in scripts/check-format.sh, which installs the
+      # clang-format scripts/tools.sh pins (hash-checked PyPI wheels), so the
+      # three CI workflows and both ci-local scripts run one formatter over
+      # one file set.
       - name: clang-format (check only)
         run: bash scripts/check-format.sh
 
       # The configure line (Release + warnings-as-errors) lives in
-      # CMakePresets.json (preset macos) so this workflow and scripts/build.sh
-      # / scripts/ci-local.sh run the identical build.
-      - name: Configure (Release)
-        run: cmake --preset macos
+      # CMakePresets.json (preset release) so this workflow, linux-ci.yml,
+      # scripts/build.sh and scripts/ci-local.sh run the identical build.
+      - name: Configure (preset release)
+        run: cmake --preset release
 
       # Bound -j: bare `-j` makes macOS runners swap into a multi-hour hang.
       - name: Build
-        run: cmake --build --preset macos -j "$(sysctl -n hw.ncpu)"
+        run: cmake --build --preset release -j "$(sysctl -n hw.ncpu)"
 
       # Runs every suite, including test_macos_ds4_report (pure DS4 codec)
       # and mac_hid_smoke. The smoke test needs the
@@ -72,8 +74,14 @@ jobs:
       # kernel devices; GitHub runners are unentitled, so it asserts the
       # probe-fallback contract and then exits 77, which SKIP_RETURN_CODE
       # maps to "Skipped" (never a failure, never a silent pass).
+      # clang-tidy 23.1.4 (pinned in scripts/tools.sh) with the shared
+      # .clang-tidy over every first-party translation unit this lane
+      # configured; any finding fails the job.
+      - name: clang-tidy
+        run: bash scripts/check-tidy.sh build
+
       - name: Run tests
-        run: ctest --preset macos
+        run: ctest --preset release
 
       - name: Verify .app bundle layout
         run: |
@@ -90,7 +98,7 @@ jobs:
       # CI builds are UNENTITLED: the IOHIDUserDevice backend requires the
       # com.apple.developer.hid.virtual.device entitlement (production,
       # signed builds), so this artifact's runtime probe falls back to the
-      # inert backend — it serves the web UI, pairs, and authenticates but
+      # inert backend: it serves the web UI, pairs, and authenticates but
       # cannot synthesize virtual gamepads. The artifact name reflects that
       # so a user downloading it from a CI run isn't surprised by
       # backendUnavailable responses to controller descriptors.
@@ -102,3 +110,55 @@ jobs:
           retention-days: 14
           # A missing bundle is a failed lane, not a warning annotation.
           if-no-files-found: error
+
+  # The release's macos job on every pull request, minus what needs the
+  # Developer ID secrets (signing, notarization, stapling): the same
+  # scripts/package-macos.sh build through the package preset, the same
+  # .dmg and .zip staging, then the .dmg mounted and its app run.
+  bundle:
+    name: macOS bundle (as the release builds it, unsigned)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          brew update
+          for formula in cmake pkg-config libsodium opus create-dmg; do
+            brew list --versions "$formula" > /dev/null 2>&1 || brew install "$formula"
+          done
+
+      - name: Build satellite.app (preset package)
+        run: bash scripts/package-macos.sh build
+
+      - name: Stage the .dmg and .zip
+        run: bash scripts/package-macos.sh stage "$(tr -d '[:space:]' < VERSION)-dev" -unsigned
+
+      - name: Mount the .dmg and run its app
+        run: bash scripts/package-macos.sh check
+
+      - name: Hand the bundle to the hardening dry run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-macos
+          path: stage/
+          retention-days: 3
+          if-no-files-found: error
+
+  # The release's harden job over the .dmg and .zip built above, signed with
+  # a throwaway key; see linux-ci.yml's release-dry-run for what a pull
+  # request cannot exercise.
+  release-dry-run:
+    name: Release hardening, dry run (macos)
+    needs: [bundle]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_release_harden.yml
+    with:
+      artifact-pattern: build-macos
+      product: satellite
+      dry-run: true

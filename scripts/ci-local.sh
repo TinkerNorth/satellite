@@ -1,28 +1,53 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-3.0-or-later
 #
-# Runs the gates Linux / macOS CI runs, in the same order, against the local
-# tree, so a green run here means a green run there. Mirrors linux-ci.yml /
-# macos-ci.yml (branching on uname); the Windows equivalent is
-# scripts/ci-local.ps1.
+# Runs the gates Linux and macOS CI run, in the same order and through the
+# same scripts, against the local tree, so a green run here means a green run
+# there. Mirrors linux-ci.yml and macos-ci.yml (branching on uname) and
+# version-consistency.yml; the Windows equivalent is scripts/ci-local.ps1.
 #
-#   scripts/ci-local.sh                    every gate
+#   scripts/ci-local.sh                    every gate the main CI job runs
+#   scripts/ci-local.sh --quick            format, action pins, allowlist,
+#                                          OSV-Scanner, gitleaks, version
+#                                          consistency, vendored freshness,
+#                                          core purity: no build
+#   scripts/ci-local.sh --with-packages    also the .deb and .rpm lanes, in
+#                                          debian:trixie and fedora:44 (docker)
+#   scripts/ci-local.sh --with-appimage    also the AppImage lane, in
+#                                          ubuntu:22.04 (docker)
+#   scripts/ci-local.sh --with-bundle      macOS: also the release bundle lane
+#                                          (scripts/package-macos.sh, unsigned)
 #   scripts/ci-local.sh --allow-missing    downgrade a missing tool to a notice
 #
 # Without --allow-missing a gate whose tool is absent FAILS rather than
-# printing a notice and continuing: a "green" run that silently skipped a gate
+# printing a notice and continuing: a green run that silently skipped a gate
 # is worse than no run at all.
 #
-# CI-only legs intentionally not mirrored: the root uinput smoke test, the
-# tray-link assertion (needs the runner's package set), the fuzz and
-# reproducibility jobs.
+# CI-only, with the reason:
+#   uinput smoke as root, AppIndicator link check   need the runner's kernel
+#                                                   module and package set
+#   headless build, fuzz smoke, reproducibility,    separate linux-ci.yml jobs
+#   Sentry SDK build                                with their own toolchains
+#   CodeQL, dependency review, measurements,        need GitHub's services
+#   the release hardening dry run                   (or, for the dry run,
+#                                                   the PR's own artifacts)
+#   Windows lanes                                   scripts/ci-local.ps1
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ALLOW_MISSING=0
+QUICK=0
+WITH_PACKAGES=0
+WITH_APPIMAGE=0
+WITH_BUNDLE=0
 for arg in "$@"; do
   case "$arg" in
     --allow-missing|--allow-missing-tools) ALLOW_MISSING=1 ;;
+    --quick) QUICK=1 ;;
+    --with-packages) WITH_PACKAGES=1 ;;
+    --with-appimage) WITH_APPIMAGE=1 ;;
+    --with-bundle) WITH_BUNDLE=1 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
@@ -43,64 +68,100 @@ have() {
 }
 
 case "$(uname -s)" in
-  Darwin) lane="macos"; jobs="$(sysctl -n hw.ncpu)" ;;
-  Linux)  lane="linux"; jobs="$(nproc)" ;;
+  Darwin) jobs="$(sysctl -n hw.ncpu)"; os="macos" ;;
+  Linux)  jobs="$(nproc)"; os="linux" ;;
   *)      echo "unsupported platform $(uname -s); use scripts/ci-local.ps1 on Windows" >&2; exit 1 ;;
 esac
 
 step "clang-format (check only)"
-if have clang-format; then
-  # CI pins 22.1.4; other versions disagree on braced-init lists, which is why
-  # the pin exists. Treat a surprise from another version with suspicion.
-  want=22.1.4
-  got="$(clang-format --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-  if [ "$got" != "$want" ]; then
-    echo "::notice:: clang-format $got, CI pins $want; disagreements may be the version, not the code."
-  fi
+# scripts/check-format.sh installs the clang-format scripts/tools.sh pins
+# (needs python3 with venv), the one every CI lane uses.
+if have python3; then
   bash scripts/check-format.sh
 fi
 
 step "Action pin lint (40-char SHA required)"
-# The same awk _security.yml runs, over the same directory.
-fail=0
-while IFS= read -r -d '' file; do
-  awk '
-    /^[[:space:]]*#/ { next }
-    {
-      sub(/[[:space:]]+#.*$/, "", $0)
-    }
-    /^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+[^[:space:]]+/ {
-      line = $0
-      sub(/^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+/, "", line)
-      if (line ~ /^\.\//) { next }
-      if (line ~ /^docker:\/\/[^@]+@sha256:[0-9a-f]{64}$/) { next }
-      if (line !~ /@[0-9a-f]{40}([[:space:]]|$)/) {
-        printf "%s: %s\n", FILENAME, line
-        exit 2
-      }
-      if (line ~ /@0{40}([[:space:]]|$)/) {
-        printf "%s: %s (forbidden all-zero placeholder pin)\n", FILENAME, line
-        exit 2
-      }
-    }
-  ' "$file" || fail=1
-done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0)
-[ "$fail" -eq 0 ] || { echo "unpinned action reference" >&2; exit 1; }
-echo "action pins: OK"
+sh scripts/check-action-pins.sh
+
+# The shared security gates (_security.yml), with the same pinned tools
+# (scripts/tools.sh) and the same arguments security.yml passes.
+if have python3 && have curl; then
+  # shellcheck source=scripts/tools.sh
+  source scripts/tools.sh
+  pyyaml_python="$(fetch_pyyaml_python)"
+  export PATH="$(dirname "${pyyaml_python}"):$PATH"
+
+  step "Vulnerability allowlist expiry check"
+  python3 scripts/security-allowlist.py check
+
+  step "OSV-Scanner (vendored + manifest deps)"
+  OSV_SCANNER="$(fetch_osv_scanner)" bash scripts/osv-scan.sh \
+    --lockfile-script scripts/vendored-osv-lockfile.sh -- .
+
+  step "Secret scan (gitleaks)"
+  "$(fetch_gitleaks)" git --config=.gitleaks.toml --redact --exit-code=1 .
+fi
+
+step "Version consistency"
+bash scripts/check-version-consistency.sh
+
+step "Vendored components <= 90 days old (security.yml)"
+bash scripts/check-vendored-freshness.sh
+echo "vendored freshness: OK"
 
 step "Core purity gate"
-# linux-ci.yml runs this; it is compiler- and platform-independent (plain
-# bash 3.2 + BSD/GNU grep/sed), so run it on macOS too.
 bash scripts/check_core_purity.sh
 
-step "Configure (Release, preset ${lane})"
-cmake --preset "${lane}"
+if [ "$QUICK" -eq 1 ]; then
+  echo ""
+  echo "Quick gates passed (no build: drop --quick for the full run)."
+  exit 0
+fi
 
-step "Build"
-cmake --build --preset "${lane}" -j "${jobs}"
+if have cmake; then
+  step "Configure (preset release)"
+  cmake --preset release
 
-step "Run tests"
-ctest --preset "${lane}"
+  step "Build"
+  cmake --build --preset release -j "${jobs}"
+
+  step "clang-tidy (pinned, shared .clang-tidy)"
+  bash scripts/check-tidy.sh build
+
+  step "Run tests"
+  ctest --preset release
+
+  if [ "$os" = "macos" ]; then
+    step "Bundle layout and smoke (macos-ci.yml)"
+    test -x satellite.app/Contents/MacOS/satellite
+    test -f satellite.app/Contents/Resources/web/index.html
+    bash scripts/smoke-alive.sh satellite.app/Contents/MacOS/satellite 45
+  fi
+fi
+
+if [ "$WITH_BUNDLE" -eq 1 ]; then
+  if [ "$os" != "macos" ]; then
+    echo "--with-bundle builds the macOS bundle; it needs macOS" >&2
+    exit 2
+  fi
+  step "macOS release bundle, unsigned (macos-ci.yml bundle job)"
+  bash scripts/package-macos.sh build
+  # No Finder automation from a script run: the image's layout is CI's.
+  SATELLITE_DMG_NO_FINDER=1 bash scripts/package-macos.sh stage "$(tr -d '[:space:]' < VERSION)-dev" "-unsigned"
+  bash scripts/package-macos.sh check
+fi
+
+for lane in deb rpm; do
+  if [ "$WITH_PACKAGES" -eq 1 ] && have docker; then
+    step "Package lane ${lane} in its container (linux-ci.yml ${lane} job)"
+    bash scripts/package-in-container.sh "${lane}"
+  fi
+done
+
+if [ "$WITH_APPIMAGE" -eq 1 ] && have docker; then
+  step "AppImage lane in ubuntu:22.04 (linux-ci.yml appimage job)"
+  bash scripts/package-in-container.sh appimage
+fi
 
 echo ""
 echo "All local CI gates passed."

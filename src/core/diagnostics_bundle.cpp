@@ -3,6 +3,7 @@
 
 #include "descriptor_json.h"
 #include "hex.h"
+#include "core/checked_io.h"
 
 #include <algorithm>
 #include <cctype>
@@ -75,14 +76,14 @@ bool readOctet(const std::string& s, size_t pos, size_t& end) {
     size_t i = pos;
     int value = 0;
     while (i < s.size() && i - pos < 3 && isDigit(s[i])) value = value * 10 + (s[i++] - '0');
-    const bool digits = i > pos && !(i < s.size() && isDigit(s[i]));
+    const bool digits = i > pos && (i >= s.size() || !isDigit(s[i]));
     end = i;
     return digits && value <= 255;
 }
 
 // The length of a dotted-quad address starting at `pos`, or 0.
 size_t ipv4At(const std::string& s, size_t pos) {
-    const bool startsWord = pos == 0 || !(isDigit(s[pos - 1]) || s[pos - 1] == '.');
+    const bool startsWord = pos == 0 || (!isDigit(s[pos - 1]) && s[pos - 1] != '.');
     if (!startsWord) return 0;
     size_t cursor = pos;
     for (int octet = 0; octet < 4; octet++) {
@@ -170,7 +171,7 @@ size_t ipv6At(const std::string& s, size_t pos) {
 void civilFromDays(int64_t days, int64_t& y, unsigned& m, unsigned& d) {
     days += 719468;
     const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
-    const unsigned doe = static_cast<unsigned>(days - era * 146097);
+    const auto doe = static_cast<unsigned>(days - era * 146097);
     const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     const unsigned mp = (5 * doy + 2) / 153;
@@ -351,10 +352,12 @@ std::string isoUtc(int64_t epochSeconds) {
     unsigned d = 0;
     civilFromDays(days, y, m, d);
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "%04lld-%02u-%02uT%02lld:%02lld:%02lldZ",
-                  static_cast<long long>(y), m, d, static_cast<long long>(secs / 3600),
-                  static_cast<long long>((secs % 3600) / 60), static_cast<long long>(secs % 60));
-    return buf;
+    const int written = std::snprintf(
+        buf, sizeof(buf), "%04lld-%02u-%02uT%02lld:%02lld:%02lldZ", static_cast<long long>(y), m, d,
+        static_cast<long long>(secs / 3600), static_cast<long long>((secs % 3600) / 60),
+        static_cast<long long>(secs % 60));
+    // A stamp that did not format is no stamp, not a cut one.
+    return satellite::io::formatted(written, buf) ? std::string(buf) : std::string();
 }
 
 JsonOut controllerDbStatusJson(const ControllerDbStatus& s) {

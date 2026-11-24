@@ -60,23 +60,31 @@ bool generateSelfSigned(const std::string& certPath, const std::string& keyPath)
         X509_gmtime_adj(X509_getm_notAfter(x509), 60L * 60 * 24 * 3650);
         if (X509_set_pubkey(x509, pkey) != 1) break;
 
-        X509_NAME* name = X509_get_subject_name(x509);
-        X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                   reinterpret_cast<const unsigned char*>("satellite"), -1, -1, 0);
-        if (X509_set_issuer_name(x509, name) != 1) break; // self-signed: issuer == subject
+        // A name of its own rather than the certificate's: OpenSSL 4 returns
+        // the subject as const, and 3.x and 4.x both copy a name they are set.
+        X509_NAME* name = X509_NAME_new();
+        if (name == nullptr) break;
+        const bool named = X509_NAME_add_entry_by_txt(
+                               name, "CN", MBSTRING_ASC,
+                               reinterpret_cast<const unsigned char*>("satellite"), -1, -1, 0) == 1;
+        const bool subjectSet = named && X509_set_subject_name(x509, name) == 1;
+        const bool issuerSet = subjectSet && X509_set_issuer_name(x509, name) == 1; // self-signed
+        X509_NAME_free(name);
+        if (!issuerSet) break;
         if (X509_sign(x509, pkey, EVP_sha256()) == 0) break;
 
         FILE* cf = openWrite(certPath.c_str());
         if (cf == nullptr) break;
         const int cwrote = PEM_write_X509(cf, x509);
-        std::fclose(cf);
-        if (cwrote != 1) break;
+        // A failed close is a write that may not have reached the disk.
+        const bool cclosed = std::fclose(cf) == 0;
+        if (cwrote != 1 || !cclosed) break;
 
         FILE* kf = openWrite(keyPath.c_str());
         if (kf == nullptr) break;
         const int kwrote = PEM_write_PrivateKey(kf, pkey, nullptr, nullptr, 0, nullptr, nullptr);
-        std::fclose(kf);
-        if (kwrote != 1) break;
+        const bool kclosed = std::fclose(kf) == 0;
+        if (kwrote != 1 || !kclosed) break;
 
 #ifndef _WIN32
         ::chmod(keyPath.c_str(), 0600); // private key is owner-readable only

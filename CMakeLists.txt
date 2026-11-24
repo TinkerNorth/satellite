@@ -96,8 +96,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(SENTRY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         set(SENTRY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
         FetchContent_Declare(sentry
-            URL https://github.com/getsentry/sentry-native/releases/download/0.16.3/sentry-native.zip
-            URL_HASH SHA256=21380c182dde677794a7b6c57e8d6e03d79ec5a03eec67514ffa7522f7e161b5
+            URL https://github.com/getsentry/sentry-native/releases/download/0.17.6/sentry-native.zip
+            URL_HASH SHA256=40b4b70cbada5bfae5b73f8267831dd023ec676d9676fb0d890878f31d2b5055
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
         # Third-party targets keep their own warning policy, the way the
         # vendored headers do behind SYSTEM includes: warnings-as-errors is
@@ -619,6 +619,19 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         CPPHTTPLIB_OPENSSL_SUPPORT
     )
 
+    # The package this build is made for, so the updater names the right
+    # upgrade command without reading a package manager's database (lintian
+    # uses-dpkg-database-directly). scripts/build-deb.sh and build-rpm.sh set
+    # it; every other build leaves it empty.
+    set(SATELLITE_PACKAGE_FORMAT "" CACHE STRING
+        "deb or rpm: the native package this Linux build is for (empty: none)")
+    if(NOT SATELLITE_PACKAGE_FORMAT MATCHES "^(|deb|rpm)$")
+        message(FATAL_ERROR "SATELLITE_PACKAGE_FORMAT is '${SATELLITE_PACKAGE_FORMAT}'; use deb, rpm or nothing")
+    endif()
+    target_compile_definitions(satellite PRIVATE
+        SATELLITE_PACKAGE_FORMAT="${SATELLITE_PACKAGE_FORMAT}"
+    )
+
     # libsodium: resolved via pkg-config (every distro ships libsodium-dev /
     # libsodium-devel with a .pc file). Fall back to a find_library search if
     # pkg-config is absent (e.g. bespoke build with -DSODIUM_ROOT=<prefix>).
@@ -752,7 +765,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # files: they land inside the sandbox prefix where neither udev nor
     # systemd ever reads them, so they are dead weight that also confuses
     # packaging linters. The host rule stays the user's responsibility on
-    # those channels -- see docs/packaging.md.
+    # those channels -- see docs/PACKAGING.md.
     if(NOT SATELLITE_SANDBOXED)
         install(FILES   ${SATELLITE_PKG_DIR}/70-satellite-uinput.rules
                 DESTINATION lib/udev/rules.d)
@@ -792,6 +805,19 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             VERBATIM)
         add_custom_target(satellite_gz_changelog ALL DEPENDS "${_changelog_gz}")
         install(FILES "${_changelog_gz}" DESTINATION "${CMAKE_INSTALL_DOCDIR}")
+        # The manual page every packaged command carries (lintian
+        # no-manual-page), compressed the same reproducible way.
+        set(_manpage_gz "${CMAKE_CURRENT_BINARY_DIR}/packaging-gz/satellite.1.gz")
+        add_custom_command(
+            OUTPUT "${_manpage_gz}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_CURRENT_BINARY_DIR}/packaging-gz"
+            COMMAND ${SATELLITE_GZIP} -9nc "${SATELLITE_PKG_DIR}/satellite.1"
+                    > "${_manpage_gz}"
+            DEPENDS "${SATELLITE_PKG_DIR}/satellite.1"
+            VERBATIM)
+        add_custom_target(satellite_gz_manpage ALL DEPENDS "${_manpage_gz}")
+        install(FILES "${_manpage_gz}" DESTINATION "${CMAKE_INSTALL_MANDIR}/man1")
     endif()
 
     set(CPACK_GENERATOR "DEB;RPM")
@@ -819,6 +845,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${SATELLITE_PKG_DIR}/postinst;${SATELLITE_PKG_DIR}/postrm")
+    # The maintainer scripts get Debian's 0755 whatever mode the checkout
+    # gave them (a container's umask left them 0775, which lintian rejects).
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
 
     set(CPACK_DEBIAN_FILE_NAME              DEB-DEFAULT)
 
@@ -921,7 +950,7 @@ if(TARGET satellite)
                         "crashpad_wer.dll was found but sentry-native never registers it "
                         "with Windows Error Reporting, so a fast-fail crash (stack cookie, "
                         "CFG, CET) would never reach Sentry. The overlay port's "
-                        "fix-crashpad-wer.patch must define SENTRY_TRANSPORT_CRASHPAD_USE_WER "
+                        "fix-wer-define.patch must define SENTRY_TRANSPORT_CRASHPAD_USE_WER "
                         "for the sentry target.")
                 endif()
             endif()
@@ -1179,6 +1208,13 @@ satellite_add_pure_test(test_hex tests/test_hex.cpp)
 satellite_add_pure_test(test_sony_buttons tests/test_sony_buttons.cpp)
 satellite_add_pure_test(test_wire_stats tests/test_wire_stats.cpp)
 satellite_add_pure_test(test_unknown_token_log tests/test_unknown_token_log.cpp)
+satellite_add_pure_test(test_bits tests/test_bits.cpp)
+satellite_add_pure_test(test_byte_boundaries tests/test_byte_boundaries.cpp)
+satellite_add_pure_test(test_package_format tests/test_package_format.cpp)
+satellite_add_pure_test(test_linux_upgrade_commands tests/test_linux_upgrade_commands.cpp)
+target_compile_definitions(test_linux_upgrade_commands PRIVATE
+    PACKAGING_MD="${CMAKE_CURRENT_SOURCE_DIR}/docs/PACKAGING.md"
+)
 satellite_add_pure_test(test_pause_detector tests/test_pause_detector.cpp)
 target_include_directories(test_pause_detector PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/bench

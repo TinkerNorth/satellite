@@ -4,11 +4,11 @@
 # Build Satellite on Linux / macOS: scripts/build.sh [debug|release] [test|clean]
 #
 # Thin wrapper over the CMake presets in CMakePresets.json, which are the
-# single source of configure truth (the same presets linux-ci.yml and
+# single source of configure truth (the release preset linux-ci.yml and
 # macos-ci.yml run, warnings-as-errors included). Same argument shape as the
 # dish repos' scripts/build.sh.
 #
-#   scripts/build.sh                # Release (linux/macos preset, by uname)
+#   scripts/build.sh                # Release (preset release) into build/
 #   scripts/build.sh debug          # Debug into build-debug/
 #   scripts/build.sh release test   # Release build, then ctest
 #   scripts/build.sh clean          # wipe the preset build directories
@@ -45,14 +45,10 @@ for arg in "$@"; do
 done
 
 case "$(uname -s)" in
-    Darwin) lane="macos" ;;
-    Linux)  lane="linux" ;;
+    Darwin | Linux) ;;
     *)      echo "unsupported platform $(uname -s); on Windows use scripts/build.ps1" >&2; exit 1 ;;
 esac
-preset="${lane}"
-if [ "${config}" = "debug" ]; then
-    preset="${lane}-debug"
-fi
+preset="${config}"
 
 if [ "$(uname -s)" = "Darwin" ]; then
     jobs="$(sysctl -n hw.ncpu)"

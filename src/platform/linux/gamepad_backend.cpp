@@ -31,8 +31,8 @@ BackendStatus probeBackend() {
 
 std::vector<satellite::BackendRuntimeStatus> enumerateBackends() {
     BackendStatus s = probeBackend();
-    return {
-        {BACKEND_ID_UINPUT, s.available, s.errorCode ? std::string(s.errorCode) : std::string()}};
+    return {{BACKEND_ID_UINPUT, s.available,
+             (s.errorCode != nullptr) ? std::string(s.errorCode) : std::string()}};
 }
 
 bool installBundledDriver(const std::string& /*backendId*/, std::string& outError) {

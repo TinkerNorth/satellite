@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "core/config_effects.h"
 
+#include <cstdint>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <ranges>
 #include <set>
 #include <string>
 #include <thread>
@@ -29,7 +31,7 @@ constexpr int RACING_THREADS = 8;
 constexpr int ROUNDS_PER_THREAD = 300;
 constexpr auto WRITER_BLOCKED_FOR = 60ms;
 
-enum class Effect { AutoStart, CrashReporting };
+enum class Effect : uint8_t { AutoStart, CrashReporting };
 
 struct Call {
     Effect effect;
@@ -57,9 +59,9 @@ class RecordingSinks {
 
     bool last(Effect effect, bool& value) const {
         std::lock_guard<std::mutex> lk(mtx_);
-        for (auto it = calls_.rbegin(); it != calls_.rend(); ++it) {
-            if (it->effect != effect) continue;
-            value = it->value;
+        for (const auto& call : std::views::reverse(calls_)) {
+            if (call.effect != effect) continue;
+            value = call.value;
             return true;
         }
         return false;
@@ -299,6 +301,7 @@ void testRacingFlipsEndWithTheFinalSnapshotApplied() {
     effects.apply(store);
 
     std::vector<std::thread> threads;
+    threads.reserve(RACING_THREADS);
     for (int t = 0; t < RACING_THREADS; ++t) {
         threads.emplace_back([&, t] {
             for (int round = 0; round < ROUNDS_PER_THREAD; ++round) {
@@ -395,26 +398,18 @@ void testTheEffectsLockNestsOnlyAboveTheSnapshotLock() {
 } // namespace
 
 int main() {
-    testFirstSightAppliesBothEffects();
-    testUnchangedSnapshotAppliesNothing();
-    testOnlyTheDifferingEffectIsApplied();
-    testSettingsWithoutEffectsApplyNothing();
-    testFlippingBackIsAppliedAgain();
-    testNoOpUpdateAppliesNothing();
-    testLatestSnapshotWinsOverASlowerEarlierWriter();
-    testRacingFlipsEndWithTheFinalSnapshotApplied();
+    return satellite::test::runMain("test_config_effects", [] {
+        testFirstSightAppliesBothEffects();
+        testUnchangedSnapshotAppliesNothing();
+        testOnlyTheDifferingEffectIsApplied();
+        testSettingsWithoutEffectsApplyNothing();
+        testFlippingBackIsAppliedAgain();
+        testNoOpUpdateAppliesNothing();
+        testLatestSnapshotWinsOverASlowerEarlierWriter();
+        testRacingFlipsEndWithTheFinalSnapshotApplied();
 #ifdef SATELLITE_LOCK_STATS
-    testSinksRunHoldingOnlyTheEffectsLock();
-    testTheEffectsLockNestsOnlyAboveTheSnapshotLock();
+        testSinksRunHoldingOnlyTheEffectsLock();
+        testTheEffectsLockNestsOnlyAboveTheSnapshotLock();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    });
 }

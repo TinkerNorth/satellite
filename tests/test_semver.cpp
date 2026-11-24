@@ -4,23 +4,7 @@
 #include <iostream>
 #include <string>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 using satellite::compareDottedVersion;
 using satellite::compareSemver;
@@ -139,11 +123,10 @@ static void testAntisymmetry() {
     const char* vers[] = {"1.0.0",        "1.0.1",        "1.1.0",       "2.0.0",
                           "1.0.0-rc.1",   "1.0.0-rc.2",   "1.0.0-rc.10", "1.0.0-alpha",
                           "1.0.0-beta.2", "1.0.0-beta.11"};
-    const int n = static_cast<int>(sizeof(vers) / sizeof(vers[0]));
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
+    for (const char* a : vers) {
+        for (const char* b : vers) {
             TEST("antisymmetry: compare(a,b) == -compare(b,a)");
-            EXPECT(sign(compareSemver(vers[i], vers[j])) == -sign(compareSemver(vers[j], vers[i])));
+            EXPECT(sign(compareSemver(a, b)) == -sign(compareSemver(b, a)));
         }
     }
 }
@@ -175,21 +158,17 @@ static void testDottedVersion() {
 }
 
 int main() {
-    std::cout << "Running semver tests...\n\n";
+    return satellite::test::runMain("test_semver", [] {
+        std::cout << "Running semver tests...\n\n";
 
-    testCoreOrdering();
-    testReleaseVsPrerelease();
-    testPrereleaseNumericOrdering();
-    testPrereleaseIdentifierCounts();
-    testPrereleaseNumericVsAlpha();
-    testSemverSpecChain();
-    testMalformedComponents();
-    testAntisymmetry();
-    testDottedVersion();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testCoreOrdering();
+        testReleaseVsPrerelease();
+        testPrereleaseNumericOrdering();
+        testPrereleaseIdentifierCounts();
+        testPrereleaseNumericVsAlpha();
+        testSemverSpecChain();
+        testMalformedComponents();
+        testAntisymmetry();
+        testDottedVersion();
+    });
 }

@@ -83,23 +83,23 @@ void appendNullable(std::string& json, const char* value) {
         json += "null";
         return;
     }
-    json += "\"";
+    json += '\"';
     json += value;
-    json += "\"";
+    json += '\"';
 }
 
 void appendExtButtons(std::string& json, uint32_t bits) {
-    json += "[";
+    json += '[';
     bool first = true;
     for (const auto& button : EXT_BUTTON_NAMES) {
         if ((bits & button.bit) == 0) continue;
-        if (!first) json += ",";
+        if (!first) json += ',';
         first = false;
-        json += "\"";
+        json += '\"';
         json += button.name;
-        json += "\"";
+        json += '\"';
     }
-    json += "]";
+    json += ']';
 }
 
 void appendSubmitLatency(std::string& json, const SubmitPathFacts& f) {
@@ -163,7 +163,7 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
     for (const auto& st : statuses) {
         const BackendDescriptor* d = backendDescriptorById(st.id);
         if (d == nullptr) continue; // unknown id: nothing to advertise
-        if (!first) json += ",";
+        if (!first) json += ',';
         first = false;
 
         json += "{\"id\":\"";
@@ -194,7 +194,7 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
         json += st.restartPending ? "true" : "false";
         json += ",\"controllers\":[";
         for (size_t i = 0; i < d->supportCount; ++i) {
-            if (i != 0) json += ",";
+            if (i != 0) json += ',';
             const BackendControllerSupport& cs = d->support[i];
             const LatencyTier tier = tierForScore(estimateCost(cs.facts).score);
             json += "{\"type\":";
@@ -227,11 +227,11 @@ std::string buildBackendsJson(const std::vector<BackendRuntimeStatus>& statuses,
             appendNullable(json, cs.motionRequires);
             json += ",\"submitLatency\":";
             appendSubmitLatency(json, cs.facts);
-            json += "}";
+            json += '}';
         }
         json += "]}";
     }
-    json += "]";
+    json += ']';
     return json;
 }
 

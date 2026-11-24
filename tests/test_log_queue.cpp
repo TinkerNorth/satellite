@@ -56,7 +56,7 @@ struct Delivery {
             return;
         }
         const auto index = static_cast<uint64_t>(record.timestampNs);
-        const size_t slot = static_cast<size_t>(producer);
+        const auto slot = static_cast<size_t>(producer);
         if (index != next[slot] || record.messageText() != "record " + std::to_string(index)) {
             ++misplaced;
         }
@@ -76,6 +76,7 @@ template <typename Queue> Delivery deliverConcurrently(Queue& queue) {
     std::atomic<int> finished{0};
     std::atomic<uint64_t> abandoned{0};
     std::vector<std::thread> producers;
+    producers.reserve(PRODUCERS);
     for (int p = 0; p < PRODUCERS; ++p) {
         producers.emplace_back([&queue, &finished, &abandoned, deadline, p] {
             for (uint64_t i = 0; i < RECORDS_PER_PRODUCER; ++i) {
@@ -237,11 +238,10 @@ void testConcurrentDelivery() {
 } // namespace
 
 int main() {
-    testRecordRoundTrip();
-    testTruncation();
-    testFullQueue();
-    testConcurrentDelivery();
-
-    std::cout << "test_log_queue: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_log_queue", [] {
+        testRecordRoundTrip();
+        testTruncation();
+        testFullQueue();
+        testConcurrentDelivery();
+    });
 }

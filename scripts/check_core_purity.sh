@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: LGPL-3.0-or-later
 #
-# Core purity gate (PLAN of record: docs/architecture.md, "pure core" split).
+# Core purity gate (PLAN of record: docs/ARCHITECTURE.md, "pure core" split).
 #
 # Gate 1 — src/core/ may include ONLY:
 #   * C/C++ standard headers (curated allowlist below),

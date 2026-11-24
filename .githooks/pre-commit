@@ -1,33 +1,24 @@
-#!/bin/bash
-# Satellite pre-commit hook: runs clang-format (autofix) on staged C/C++ and
-# Objective-C++ files. Skips if clang-format is missing so devs who haven't run
-# setup-hooks.sh or installed the tool yet aren't blocked; CI enforces the same
-# check in --Werror mode.
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-3.0-or-later
+#
+# Satellite pre-commit hook: formats the staged C/C++ and Objective-C++ files
+# with the clang-format scripts/tools.sh pins (the one CI checks with) and
+# re-stages them. CI runs the same formatter in check mode, so anything this
+# hook misses still fails the pull request.
 set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
 
-# Collect staged source files (added / copied / modified), NUL-separated to
-# handle paths with spaces.
-staged=$(git diff --cached --name-only --diff-filter=ACM -z \
-    -- '*.cpp' '*.h' '*.c' '*.mm' \
-    | tr '\0' '\n' | sed '/^$/d')
-if [ -z "$staged" ]; then
+staged=()
+while IFS= read -r -d '' file; do
+    staged+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.cpp' '*.h' '*.c' '*.mm')
+if [ "${#staged[@]}" -eq 0 ]; then
     exit 0
 fi
 
-format_ok=1
-
-if command -v clang-format >/dev/null 2>&1; then
-    echo "▶ clang-format (staged files)"
-    echo "$staged" | while IFS= read -r file; do
-        clang-format -i "$file"
-        git add "$file"
-    done
-else
-    echo "⚠  clang-format not installed; skipping (brew install clang-format)"
-fi
-
-if [ "$format_ok" -eq 0 ]; then
-    echo
-    echo "✗ pre-commit failed; fix the issues above and re-stage."
-    exit 1
-fi
+# shellcheck source=scripts/tools.sh
+source scripts/tools.sh
+fetch_clang_format
+echo "=== clang-format ${CLANG_FORMAT_VERSION} (staged files) ==="
+clang-format -i "${staged[@]}"
+git add -- "${staged[@]}"

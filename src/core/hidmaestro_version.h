@@ -192,7 +192,7 @@ inline SectionVersion readSectionVersion(const uint8_t* p) {
 inline int32_t readLE32s(const uint8_t* p) { return static_cast<int32_t>(readLE32(p)); }
 
 inline uint64_t readLE64(const uint8_t* p) {
-    return static_cast<uint64_t>(readLE32(p)) | (static_cast<uint64_t>(readLE32(p + 4)) << 32);
+    return static_cast<uint64_t>(readLE32(p)) | (static_cast<uint64_t>(readLE32(p + 4)) << 32U);
 }
 
 // `bytes` holds VERSION_SECTION_SIZE bytes.
@@ -378,7 +378,7 @@ inline std::string describeVersionSection(const VersionSection& s) {
     const std::string companion = "companion " +
                                   describeProtocols(s.companionProtocolMin, s.companionProtocol) +
                                   " error " + std::to_string(s.companionConfigError);
-    const std::string tag = hexEncodeBE32(static_cast<uint32_t>(s.identityTag >> 32)) +
+    const std::string tag = hexEncodeBE32(static_cast<uint32_t>(s.identityTag >> 32U)) +
                             hexEncodeBE32(static_cast<uint32_t>(s.identityTag));
     return "layout " + std::to_string(s.layoutVersion) + ", " + sdk + ", " + driver + ", " +
            companion + ", tag " + tag;

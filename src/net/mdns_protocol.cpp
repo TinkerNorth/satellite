@@ -2,9 +2,12 @@
 
 #include "mdns_protocol.h"
 #include "core/byte_order.h"
+#include "core/bits.h"
 
 #include <algorithm>
 #include <cctype>
+
+namespace bits = satellite::bits;
 
 namespace mdns {
 
@@ -47,24 +50,25 @@ size_t readDnsName(const uint8_t* packet, size_t packetLen, size_t offset, std::
         if (b == 0) {
             // Terminator. After a compression jump, only bytes up to the first
             // jump count toward consumption.
-            if (!jumped)
+            if (!jumped) {
                 consumedBeforeJump = pos - offset + 1;
-            else if (consumedBeforeJump == 0)
+            } else if (consumedBeforeJump == 0) {
                 return 0;
+            }
             return consumedBeforeJump;
         }
-        if ((b & 0xC0) == 0xC0) {
+        if ((bits::u32(b) & 0xC0U) == 0xC0U) {
             // Compression pointer: 2 bytes total, target is the low 14 bits.
             if (pos + 1 >= packetLen) return 0;
             const uint16_t target =
-                (static_cast<uint16_t>(b & 0x3F) << 8) | static_cast<uint16_t>(packet[pos + 1]);
+                bits::low16(((bits::u32(b) & 0x3FU) << 8U) | bits::u32(packet[pos + 1]));
             if (!jumped) consumedBeforeJump = pos - offset + 2;
             jumped = true;
             if (target >= packetLen || target >= pos) return 0; // forbid forward jumps to here
             pos = target;
             continue;
         }
-        if ((b & 0xC0) != 0) return 0; // reserved bits set
+        if (bits::anySet(b, 0xC0U)) return 0; // reserved bits set
         const size_t labelLen = b;
         if (pos + 1 + labelLen > packetLen) return 0;
         outName.append(reinterpret_cast<const char*>(packet + pos + 1), labelLen);
@@ -99,7 +103,7 @@ bool parseHeaderAndQuestions(const uint8_t* data, size_t len, Header& header,
         q.type = readBE16(data + pos);
         const uint16_t rawClass = readBE16(data + pos + 2);
         q.unicastResponse = (rawClass & CACHE_FLUSH_BIT) != 0;
-        q.cls = rawClass & ~CACHE_FLUSH_BIT;
+        q.cls = bits::low16(bits::u32(rawClass) & ~bits::u32(CACHE_FLUSH_BIT));
         pos += 4;
         questions.push_back(std::move(q));
     }
@@ -131,10 +135,10 @@ bool parseAnswerSection(const uint8_t* data, size_t len, uint16_t count,
         pos += consumed;
         if (pos + 10 > len) return false;
         a.type = readBE16(data + pos);
-        a.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
-        a.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
-                (static_cast<uint32_t>(data[pos + 5]) << 16) |
-                (static_cast<uint32_t>(data[pos + 6]) << 8) | static_cast<uint32_t>(data[pos + 7]);
+        a.cls = bits::low16(bits::u32(readBE16(data + pos + 2)) & ~bits::u32(CACHE_FLUSH_BIT));
+        a.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24U) |
+                (static_cast<uint32_t>(data[pos + 5]) << 16U) |
+                (static_cast<uint32_t>(data[pos + 6]) << 8U) | static_cast<uint32_t>(data[pos + 7]);
         const uint16_t rdlen = readBE16(data + pos + 8);
         pos += 10;
         if (pos + rdlen > len) return false; // rdata overruns the packet
@@ -209,10 +213,10 @@ bool parsePacket(const uint8_t* data, size_t len, Header& header, std::vector<Qu
         pos += consumed;
         if (pos + 10 > len) return false;
         r.type = readBE16(data + pos);
-        r.cls = readBE16(data + pos + 2) & ~CACHE_FLUSH_BIT;
-        r.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24) |
-                (static_cast<uint32_t>(data[pos + 5]) << 16) |
-                (static_cast<uint32_t>(data[pos + 6]) << 8) | static_cast<uint32_t>(data[pos + 7]);
+        r.cls = bits::low16(bits::u32(readBE16(data + pos + 2)) & ~bits::u32(CACHE_FLUSH_BIT));
+        r.ttl = (static_cast<uint32_t>(data[pos + 4]) << 24U) |
+                (static_cast<uint32_t>(data[pos + 5]) << 16U) |
+                (static_cast<uint32_t>(data[pos + 6]) << 8U) | static_cast<uint32_t>(data[pos + 7]);
         const uint16_t rdlen = readBE16(data + pos + 8);
         pos += 10;
         if (pos + rdlen > len) return false; // rdata overruns the packet
@@ -231,8 +235,9 @@ bool isKnownAnswerSuppressed(const std::vector<Answer>& knownAnswers, const std:
         if (x.size() != y.size()) return false;
         for (size_t i = 0; i < x.size(); ++i) {
             if (std::tolower(static_cast<unsigned char>(x[i])) !=
-                std::tolower(static_cast<unsigned char>(y[i])))
+                std::tolower(static_cast<unsigned char>(y[i]))) {
                 return false;
+            }
         }
         return true;
     };
@@ -323,7 +328,9 @@ bool txtRdata(const std::vector<std::pair<std::string, std::string>>& pairs,
         return true;
     }
     for (const auto& [k, v] : pairs) {
-        const std::string entry = k + "=" + v;
+        std::string entry = k;
+        entry += '=';
+        entry += v;
         if (entry.size() > 255) return false;
         out.push_back(static_cast<uint8_t>(entry.size()));
         out.insert(out.end(), entry.begin(), entry.end());
@@ -433,8 +440,8 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
     const bool emitSrv = !inputs.suppressSrv;
     const bool emitTxt = !inputs.suppressTxt;
     const bool emitA = (inputs.ipv4 != nullptr) && !inputs.suppressA;
-    const uint16_t answerCount = static_cast<uint16_t>((emitPtr ? 1 : 0) + (emitSrv ? 1 : 0) +
-                                                       (emitTxt ? 1 : 0) + (emitA ? 1 : 0));
+    const auto answerCount = static_cast<uint16_t>((emitPtr ? 1 : 0) + (emitSrv ? 1 : 0) +
+                                                   (emitTxt ? 1 : 0) + (emitA ? 1 : 0));
     // Every record suppressed → "send nothing" (RFC 6762 §7.1).
     if (answerCount == 0) return 0;
 
@@ -481,8 +488,6 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     if (out == nullptr || outCap < 12) return 0;
     const std::string serviceType = SERVICE_TYPE_DOMAIN;
     const std::string instanceFqdn = inputs.instanceName + "." + serviceType;
-    const std::string hostFqdn = inputs.hostName + ".local.";
-
     const std::vector<ProbeRecord> proposed = buildProposedRecords(inputs);
     if (proposed.empty()) return 0; // SRV + TXT are always present; defensive
 
@@ -514,8 +519,9 @@ size_t encodeProbeQuery(uint8_t* out, size_t outCap, const ResponseInputs& input
     // is a response-side directive, meaningless in a query's authority.
     for (const auto& r : proposed) {
         if (!writeAuthorityRecord(out, outCap, pos, r.name, r.type, CLASS_IN, r.ttl, r.rdata.data(),
-                                  r.rdata.size()))
+                                  r.rdata.size())) {
             return 0;
+        }
     }
     return pos;
 }
@@ -608,8 +614,9 @@ bool authorityHasRecordFor(const std::vector<ProbeRecord>& authority, const std:
         if (x.size() != y.size()) return false;
         for (size_t i = 0; i < x.size(); ++i) {
             if (std::tolower(static_cast<unsigned char>(x[i])) !=
-                std::tolower(static_cast<unsigned char>(y[i])))
+                std::tolower(static_cast<unsigned char>(y[i]))) {
                 return false;
+            }
         }
         return true;
     };

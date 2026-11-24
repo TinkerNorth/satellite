@@ -1,393 +1,16 @@
 # Satellite
 
-Low-latency Xbox controller forwarding over the network. Captures physical controller input on one machine and injects it as a virtual Xbox 360 controller on another. It handles input the way [Moonlight](https://github.com/moonlight-stream/moonlight-qt) and [Sunshine](https://github.com/LizardByte/Sunshine) do, but as a standalone tool.
+Satellite runs on your gaming PC and lets the Dish apps on your phone, tablet or other computer act as wireless controllers for it.
 
-Runs as a system tray application with a built-in web UI for configuration. No console window required.
+Dish is made of two parts. The Dish apps run on the device that holds your controller, or that is the controller: Dish for Android, Dish for iOS, Dish for macOS, Dish for Windows and Dish for Linux. Satellite is the small server on the PC you play on, and it makes each Dish controller look to your games like a controller plugged into that PC. You need one of each. Everything is free and open source, the website is [dish.tinkernorth.com](https://dish.tinkernorth.com), and I maintain all of it on my own.
 
-## How it works
+## Download
 
-```
-┌──────────────┐        UDP (12 bytes)       ┌──────────────────┐
-│    Sender     │ ─────────────────────────►  │     Receiver     │
-│  (XInput)     │    XUSB_REPORT packet       │  (ViGEmBus)      │
-│               │                             │                  │
-│ Physical Xbox │ ◄─────────────────────────  │ Virtual Xbox 360 │
-│  controller   │     MSG_RUMBLE (7 bytes)    │   controller     │
-└──────────────┘                              └──────────────────┘
-```
+Satellite 2.4.0 is the current release. Every link below always points at the newest one.
 
-**Sender** polls a physical Xbox controller via XInput at ~250 Hz and streams 12-byte `XUSB_REPORT` packets over UDP.
+Windows 10 or 11 (x64): download **[SatelliteSetup.exe](https://github.com/TinkerNorth/satellite/releases/latest/download/SatelliteSetup.exe)** and run it. It installs Satellite and the drivers it needs, and from then on Satellite can update itself.
 
-**Receiver** runs as a system tray app. It listens for those packets and injects them into Windows as a virtual controller — Xbox 360 / DualShock 4 through the ViGEmBus kernel driver (direct `DeviceIoControl`, no DLLs in between), and DualSense / DualSense Edge / Switch Pro (plus the same two as fallback) through the HIDMaestro user-mode driver (a seqlock write into the driver's shared-memory section, no managed code on the frame path; the Switch Pro's 48-byte state block takes the same write into a mailbox the bundled helper relays to HIDMaestro's protocol host, which answers the Switch handshake and streams the reports).
-
-The hot path is three syscalls with zero allocations: `recvfrom()` → `memcpy()` → `DeviceIoControl()` (ViGEm) or `recvfrom()` → seqlock `memcpy()` → `SetEvent()` (HIDMaestro).
-
-The return path carries rumble the other direction. When a game on the receiver host calls `XInputSetState` (or the equivalent on Linux's evdev FF subsystem), the platform backend fires a notification, the receiver maps it to the originating dish session, and forwards a `MSG_RUMBLE` packet back over the encrypted UDP channel. See [Rumble (return path)](#rumble-return-path) below.
-
-## Features
-
-- System tray icon: right-click for Check for Updates, Open Web UI, Exit
-- Web-based configuration: local dashboard at `http://localhost:9877`
-- Live status: packet count, sender IP, listening state
-- Configurable UDP port, changed via the web UI
-- Optional start with Windows (via registry)
-- Controller audio: an emulated DualSense or DualShock 4 v2 also presents
-  the pad's own microphone and speaker to Windows, each direction switchable
-  on its own, and a DualSense carries its HD-haptics lanes too, so games that
-  vibrate through Sony's own pad library reach the client either as the
-  waveform or reduced to rumble. See [Controller audio](#controller-audio)
-  below.
-- In-app OTA updates: the check/download/install/restart loop hits the
-  GitHub Releases API, verifies SHA-256 against `SHA256SUMS`, then hands off
-  to the platform-native installer (Inno Setup on Windows, `.app` bundle swap
-  on macOS, AppImage in-place replace on Linux; `.deb` users get a copyable
-  `apt upgrade` command instead). See [OTA Updates](#ota-updates) below.
-- Statically linked single exe, no DLLs needed
-- Config persisted to `%APPDATA%\satellite\config.json`
-
-## Prerequisites
-
-### Receiver machine
-- **Windows 10/11** with at least one virtual-gamepad driver installed — the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases) (Xbox 360 + DualShock 4) and/or the [HIDMaestro driver](https://github.com/hifihedgehog/HIDMaestro) (adds DualSense, DualSense Edge + Switch Pro; user-mode for input, no reboot — see [Controller audio](#controller-audio) for the one case that also loads a kernel USB transport). The `SatelliteSetup.exe` installer bundles both and installs them for you by default (see [Installation](#installation)); Satellite runs with either, both, or none — the offered controller types degrade accordingly. Or:
-- **Linux** with the in-tree `uinput` kernel module and write access to `/dev/uinput` (see [Building → Linux](#linux) for the udev/group setup). Or:
-- **macOS 10.15+** with a build carrying the `com.apple.developer.hid.virtual.device` entitlement (production builds): controllers are synthesized as virtual DualShock 4 pads via `IOHIDUserDevice`. Unentitled builds (CI artifacts, local compiles) run as development/web-UI servers only; controller descriptors apply as `backendUnavailable`.
-
-### Client (sender) device
-- **dish-android**: an Android phone running the Dish app (Bluetooth/USB controllers, touch overlay, motion). Other Dish clients implement the same contract ([`docs/contract.md`](docs/contract.md)).
-
-### Build toolchain
-- **Windows:** MSYS2's MINGW64 toolchain (g++, CMake, OpenSSL, libopus), the same lane CI builds and tests. `scripts\install-deps.ps1` installs all of it, plus [Inno Setup 6](https://jrsoftware.org/isinfo.php) and the .NET SDK for the installer pipeline; pass `-Msvc` to also bootstrap the hardened MSVC + vcpkg lane.
-- **Linux / macOS:** `cmake`, `pkg-config`, a C++17 compiler, and the libsodium/libopus development headers. `scripts/install-deps.sh` installs the exact CI package set (apt on Debian/Ubuntu, brew on macOS). See the per-platform sections in [Building](#building) for other distros' package names.
-
-## Installation
-
-Download `SatelliteSetup.exe` from the [Releases](https://github.com/TinkerNorth/satellite/releases) page and run it. The installer will:
-
-- Install Satellite to `Program Files\Satellite`
-- Create a Start Menu shortcut
-- Optionally create a Desktop shortcut
-- Optionally set Satellite to start with Windows
-- Register in **Settings → Apps → Installed Apps** with an uninstaller
-- Detect the ViGEmBus driver and, by default, install the bundled
-  v1.22.0 if it's missing or older. That release lays down `ViGEmBus.sys`
-  1.21.442.0, which is the file version the installer and the app's driver
-  banner compare against; ViGEmBus 1.22.0 is the final upstream release, so
-  newer installations are left untouched. The Components page shows the
-  detected status before you continue.
-- Deploy the HIDMaestro driver (optional-but-default component). It is a
-  user-mode UMDF2 driver embedded in the bundled `satellite-hm-helper.exe`;
-  deployment is idempotent and needs no reboot. It adds virtual DualSense,
-  DualSense Edge and Switch Pro controller types, and covers DualShock 4 / Xbox 360 when
-  ViGEmBus is absent. Setup installs no kernel driver for it; the one
-  component that does is controller audio, and it installs on first use
-  rather than at setup time (see [Controller audio](#controller-audio)).
-
-### Driver options for unattended installs
-
-The installer accepts `/VIGEM=` and `/HIDMAESTRO=` switches alongside Inno
-Setup's standard `/SILENT` / `/VERYSILENT`:
-
-| Switch | Behavior |
-|---|---|
-| *(none)* / `/VIGEM=auto` | Default. Install the bundled ViGEmBus only if missing or older than the driver it carries, `ViGEmBus.sys` 1.21.442.0. |
-| `/VIGEM=bundled` | Force-run the bundled installer regardless of what's already there. |
-| `/VIGEM=skip` | Don't touch the driver. Use this on locked-down machines or when ViGEmBus is managed externally. |
-| *(none)* / `/HIDMAESTRO=auto` | Default. Deploy/refresh the bundled HIDMaestro driver (idempotent, no reboot) and register the Satellite Controller Broker service. |
-| `/HIDMAESTRO=skip` | Don't touch the HIDMaestro driver, and don't register the broker service (an existing one is removed). |
-
-A reboot is sometimes required on first ViGEmBus install or on an upgrade
-over an older ViGEmBus (MSI exit code 3010). The Satellite installer surfaces
-this as a "Restart now / later" prompt on the final wizard page. Until you
-reboot, virtual-gamepad output may not work even though the driver is
-installed. HIDMaestro never needs a reboot.
-
-### Upgrading
-
-Running a newer `SatelliteSetup.exe` over an existing install (or letting
-the in-app updater do it) upgrades everything in place:
-
-- The app and web UI are replaced; your config, pairings and the autostart /
-  desktop-icon choices are kept.
-- **ViGEmBus** is upgraded only if the installed `ViGEmBus.sys` is older than
-  the 1.21.442.0 the bundled v1.22.0 carries (compared by file version; the
-  installer and the driver are versioned separately upstream). Same or newer
-  is left alone.
-  An upgrade that replaces a loaded kernel driver can require a restart.
-- **HIDMaestro** is re-deployed from the bundled helper every time the
-  component is selected. The SDK compares the installed driver's manifest hash
-  to the embedded one, so a same-version run is a ~50 ms no-op and a bumped
-  pin is a real redeploy. No reboot.
-- Component selection follows Inno Setup's memory of your previous install: a
-  "Full" install picks up new components (HIDMaestro was added in 2.0.0); a
-  "Custom" install keeps exactly the components you picked before, so the new
-  driver is not added silently. The dashboard tells you either way.
-- The in-app updater runs the installer `/VERYSILENT /NORESTART`, so it never
-  reboots the PC by itself. Driver failures are written to the setup log under
-  `%TEMP%` instead of raising a dialog nobody is there to dismiss.
-
-The dashboard shows a **driver banner** on Windows: which of the two drivers is
-installed, its version against the version this Satellite build bundles, and
-whether ViGEmBus is waiting on a restart to finish an upgrade. It stays a small
-green strip while everything is current and turns amber or red with the fix as
-the action: install the pending Satellite update (which carries both drivers)
-or re-run the installer for the running version.
-
-Creating a HIDMaestro virtual device needs administrator rights, and
-Satellite itself runs unelevated. Setup therefore registers the bundled
-`satellite-hm-helper.exe` as the **Satellite Controller Broker** service
-(`SatelliteHmBroker`, LocalSystem, demand-start). Satellite reaches the
-broker over a named pipe as soon as it starts, and again after the dashboard
-installs the driver, so the first HIDMaestro controller finds the connection
-ready; the broker creates the device and hands the shared-memory handles
-back, and no elevation prompt appears, whether or not anyone is at the PC.
-The service starts on that first connection (Windows' named-pipe service
-trigger, or Satellite starting it directly, which setup permits), stays up
-while Satellite is connected, and exits after five idle minutes once Satellite
-has gone. The broker admits only interactive logons and only the installed
-`satellite.exe` beside it; Satellite in turn accepts the pipe only when its
-server is the registered service's process. If the service is missing
-(installed with `/HIDMAESTRO=skip`, or removed by hand), Satellite falls back
-to spawning the helper elevated for the session when a HIDMaestro controller
-connects, which is the one case that still shows a UAC prompt. ViGEm-only
-sessions never show one. Signed releases
-additionally carry Windows' UIAccess accessibility flag, so touchpad-as-mouse
-input keeps reaching the foreground window after a game exits; this requires
-the default `Program Files\Satellite` install.
-
-### Controller audio
-
-A real DualSense (or DualShock 4 v2) is not only a gamepad: it is also a USB
-audio device, presenting Windows a speaker/headset output and a headset
-microphone input. Satellite emulates those endpoints too, so a game's chat
-audio reaches the player's headset on the client device and the client's
-microphone is recorded on the PC from the pad's own mic endpoint. The
-DualSense mute button and its mute lamp work end to end.
-
-Windows names those endpoints after the persona's USB product string, so which
-device to pick in the sound mixer depends on the pad Satellite created. The
-DualSense composite reports "DualSense Wireless Controller" and appears as
-`Speakers (DualSense Wireless Controller)` and `Headset Microphone (DualSense
-Wireless Controller)`. The DualShock 4 v2 composite reports plain "Wireless
-Controller"; its output terminal is a headset rather than a speaker, so the
-leading noun may differ — look for the product string, not the prefix.
-
-This is the one part of Satellite that is not user-mode. HIDMaestro serves an
-audio-carrying ("composite") controller over a bundled, WHLK-certified
-usbip-win2 kernel USB transport, which HIDMaestro installs the **first time**
-such a controller is created — not at setup time, and never for an input-only
-pad. Everything else, including every controller type without audio endpoints,
-stays on the user-mode UMDF2 path described above.
-
-Controller audio is five settings, all under **Settings → Controller audio** in
-the dashboard, all persisted in `config.json`, and all on by default:
-
-| Setting | What it gates | Applies |
-|---|---|---|
-| `controllerAudio` | Whether an audio-carrying persona is created at all — and so whether the kernel transport is ever installed | Next controller connected |
-| `controllerAudioMic` | The client's microphone reaching the pad's mic endpoint | Immediately |
-| `controllerAudioSpeaker` | The pad's speaker output reaching the client | Immediately |
-| `controllerAudioHaptics` | The DualSense HD-haptics lanes reaching the client, as the waveform or reduced to rumble | Immediately |
-| `controllerAudioKeepDefaultDevice` | Whether Satellite puts the previous default playback device back after the pad's endpoint appears | Next controller connected |
-
-The master switch is the one with teeth: with `controllerAudio` off, Satellite
-only ever creates input-only personas, so the kernel transport is never
-installed. It applies to the next controller connected; a pad already carrying
-audio keeps it until it is reconnected.
-
-The three lane switches gate the wire, not the persona. HIDMaestro has no
-mic-only audio function — every composite profile it ships declares both an
-input and an output streaming interface — so "microphone without speaker"
-cannot be expressed at the persona level at all. Both Windows endpoints
-therefore keep existing either way and only the network traffic stops, which is
-also why these reach a stream that is already playing: nothing has to be
-replugged for them to take effect. Turning them all off is not the same as
-`controllerAudio` off, which declines the persona and with it the kernel
-transport.
-
-`controllerAudioHaptics` covers channels 3/4 of the DualSense's output
-stream, the two voice-coil actuators. A DualSense game authors its vibration
-as audio on those lanes; titles built on Sony's own pad library use nothing
-else, so a pad receiving only HID motor bytes never rumbles in them. A client
-that can play the waveform into its own DualSense receives it as such; any
-other client receives each 20 ms window reduced to motor strength on the
-ordinary rumble path, mixed with the game's HID rumble. The switch stops both
-at once. The DualShock 4 v2 audio function has no haptics lanes, so this only
-ever applies to a DualSense.
-
-`controllerAudioKeepDefaultDevice` is there because Windows promotes a newly
-arrived endpoint to the default playback device: an endpoint with no persisted
-`Level` value lands in the "newest device" bucket, where USB bus type and
-Speakers form factor both rank at the top ([default audio endpoint
-selection](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/default-audio-endpoint-selection)).
-That, and not the feature itself, is what makes controller audio look like it
-forwards everything: every sound on the desktop is being rendered into the
-pad's endpoint. With this on, Satellite puts the previous default back
-afterwards; turn it off to let the pad become the default the way Windows
-intended.
-
-A key missing from `config.json` reads as its default, so a config written
-before the switch was split keeps behaving exactly as it did. The live state
-is published two ways: `GET /api/server/capabilities` reports `audio` per
-backend, and additively a top-level `controllerAudio` object whose `enabled` /
-`mic` / `speaker` / `hapticAudio` say what will actually flow; `GET /api/status`
-carries all five settings.
-
-### Uninstalling
-
-Use **Settings → Apps → Installed Apps → Satellite → Uninstall**, or run
-the uninstaller from the Start Menu. The uninstaller will:
-
-- Stop `satellite.exe` if it's running.
-- Remove the Windows Firewall rules the installer added (UDP input 9876,
-  discovery 9879, mDNS 5353, HTTPS client API 9443) — plus the stale
-  "Satellite HTTP" (TCP 9877; the admin server binds loopback, so no rule
-  is added anymore) and "Satellite Pairing" (TCP 9878) rules if an older
-  install left them behind.
-- Delete the program files, Start Menu and Desktop shortcuts, and the
-  HKCU "Run at login" registry entry.
-- Ask whether to also uninstall the ViGEmBus driver. The default is
-  No, because other apps (DS4Windows, BetterJoy, MoonDeck-Buddy, etc.)
-  commonly share it and removing it would break them silently.
-- Ask the same, separately, for the HIDMaestro driver (other HIDMaestro
-  consumers such as PadForge may share it; default No).
-
-User configuration (`%APPDATA%\satellite\config.json` and the pairing
-keyfile) is left in place, so a reinstall preserves your paired
-clients. Delete that folder by hand if you want a clean wipe.
-
-The uninstaller accepts `/REMOVEVIGEM=` and `/REMOVEHIDMAESTRO=` switches
-alongside Inno Setup's standard `/SILENT`:
-
-| Switch | Behavior |
-|---|---|
-| *(none)* / `/REMOVEVIGEM=auto` | Default. Prompt the user; on `/SILENT` uninstall, do not touch the driver. |
-| `/REMOVEVIGEM=yes` | Always uninstall the ViGEmBus driver as part of removing Satellite. |
-| `/REMOVEVIGEM=no` | Never uninstall the ViGEmBus driver. Suppresses the prompt. |
-| *(none)* / `/REMOVEHIDMAESTRO=auto` | Default. Prompt the user; on `/SILENT` uninstall, do not touch the driver. |
-| `/REMOVEHIDMAESTRO=yes` | Always remove the HIDMaestro driver as part of removing Satellite. |
-| `/REMOVEHIDMAESTRO=no` | Never remove the HIDMaestro driver. Suppresses the prompt. |
-
-## Building
-
-Local builds and CI run on the same rails: [`CMakePresets.json`](CMakePresets.json)
-carries every lane's configure flags, and the scripts under
-[`scripts/`](scripts/) drive those presets. The whole story is four commands:
-
-| Step | Windows | Linux / macOS |
-|---|---|---|
-| Install the CI toolchain (once) | `scripts\install-deps.ps1` | `scripts/install-deps.sh` |
-| Build (add `debug` and/or `test`) | `scripts\build.ps1` | `scripts/build.sh` |
-| Run every CI gate before pushing | `scripts\ci-local.ps1` | `scripts/ci-local.sh` |
-| Build the Windows installer | `scripts\build-installer.ps1` | n/a |
-
-The historical entry points (`build-satellite.bat`, `build-satellite.sh`,
-`build-tests.bat`, `build-deb.sh`, `build-installer.bat`,
-`install-dependencies.bat`) still work; each is now a thin forwarder to the
-matching script, as is `hardware-selftest.bat` for
-`scripts\hardware-selftest.ps1`. The forwarders run under a Restricted
-execution policy, which refuses the `.ps1` files themselves.
-
-### Windows
-
-```powershell
-scripts\install-deps.ps1        # once: MSYS2 MINGW64 toolchain + extras
-scripts\build.ps1               # Release build -> satellite.exe
-scripts\build.ps1 release test  # build, then the full ctest suite
-scripts\ci-local.ps1            # everything windows-ci.yml gates on
-```
-
-The default lane is MSYS2 **MINGW64** with MinGW Makefiles, exactly what
-`windows-ci.yml` builds and tests. (An earlier `install-dependencies.bat`
-installed the UCRT64 toolchain instead; that is not what CI runs, and
-`scripts\install-deps.ps1` migrates the PATH entry.) The hardened
-MSVC + vcpkg lane that `windows-msvc-ci.yml` and releases build (CFG, CET,
-Spectre mitigations) is `scripts\build.ps1 -Msvc` after a one-time
-`scripts\install-deps.ps1 -Msvc`.
-
-### macOS
-
-macOS receivers synthesize virtual DualShock 4 controllers through
-`IOHIDUserDevice` (macOS 10.15+). Creating the kernel HID device requires the
-`com.apple.developer.hid.virtual.device` entitlement, which production
-(signed) builds carry. A locally-compiled or CI build is unentitled: the
-runtime probe detects that and the server falls back to the historical inert
-backend — it still pairs, authenticates, serves the web UI, and reports
-status to clients, but applies every controller descriptor as
-`backendUnavailable`. Unentitled builds are useful for development, protocol
-testing, and running the web dashboard from a Mac; they are not receivers for
-game input. See `docs/architecture.md` → "macOS backend" for the design.
-
-Prerequisites:
-
-- Xcode Command Line Tools (`xcode-select --install`)
-- Homebrew packages: `brew install cmake pkg-config libsodium opus`
-
-Build:
-
-```bash
-scripts/install-deps.sh   # once: the macos-ci.yml brew set + pinned clang-format
-scripts/build.sh          # Release build -> satellite.app
-```
-
-`scripts/build.sh` drives the `macos` preset (the same configure line
-`macos-ci.yml` runs, warnings-as-errors included), producing a
-`satellite.app` bundle at the repo root. Config lives at
-`~/Library/Application Support/satellite/config.json`; the DPAPI-equivalent
-keyfile lives at `~/.config/satellite/keyfile` (mode `0600`). "Run at login"
-is a `LaunchAgents` plist.
-
-### Linux
-
-Linux is a full receiver: virtual gamepads are synthesized via
-`/dev/uinput` (the in-tree `uinput` kernel module, no out-of-tree driver
-needed). Pairing, encryption, the web UI, and config persistence all match
-the Windows behavior.
-
-Prerequisites:
-
-- `cmake`, `g++` (or `clang++`), `pkg-config`
-- libsodium and libopus development headers (libopus is the
-  controller-audio codec)
-    - Debian/Ubuntu: `sudo apt install libsodium-dev libopus-dev`
-    - Fedora/RHEL:   `sudo dnf install libsodium-devel opus-devel`
-    - Arch:          `sudo pacman -S libsodium opus`
-- *(Optional, for the system tray icon)* libayatana-appindicator + GTK3 dev
-  headers. Without these, the binary builds headless and runs a
-  `sigwait` loop. The web UI at `http://localhost:9877` is the primary
-  control surface either way.
-    - Debian/Ubuntu: `sudo apt install libayatana-appindicator3-dev libgtk-3-dev`
-    - Fedora/RHEL:   `sudo dnf install libayatana-appindicator-gtk3-devel gtk3-devel`
-    - Arch:          `sudo pacman -S libayatana-appindicator gtk3`
-
-> **Vanilla GNOME users:** GNOME has no built-in tray. Install the
-> [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/)
-> extension to see the icon. KDE, XFCE, Cinnamon, MATE, Budgie, and Pantheon
-> work out of the box.
-
-There are six install paths, in order of preference for desktop users:
-
-1. **APT repository** (Debian / Ubuntu): `apt install satellite`, with
-   automatic future upgrades. Recommended.
-2. **Standalone `.deb`**: one-shot install from the Releases page.
-3. **DNF/YUM repository** (Fedora / RHEL / openSUSE): `dnf install
-   satellite`, with automatic future upgrades.
-4. **Standalone `.rpm`**: one-shot install from the Releases page.
-5. **Arch Linux AUR**: `yay -S satellite-bin`.
-6. **Portable build**: works anywhere; you handle udev/group setup by
-   hand (one-time).
-
-Flatpak and Snap manifests also live in [`packaging/`](packaging/), but they
-are sideload/self-host only — neither Flathub nor the Snap Store is a viable
-route for an app that needs `/dev/uinput`, and neither format can install the
-udev rule that grants it. They are worth using on Steam Deck, Bazzite and
-Nobara, where the host already carries that rule. See
-[`docs/packaging.md`](docs/packaging.md).
-
-#### Option A: APT repository (Debian / Ubuntu, recommended)
-
-To get satellite the same way as any other system package, updated
-automatically by `apt upgrade` alongside your kernel and browser, add our
-hosted APT repository:
+Debian and Ubuntu: add the APT repository once, and `apt upgrade` keeps Satellite current with the rest of your system.
 
 ```bash
 curl -fsSL https://tinkernorth.github.io/satellite/gpg.key \
@@ -398,43 +21,7 @@ echo "deb [signed-by=/usr/share/keyrings/satellite-archive-keyring.gpg] \
 sudo apt update && sudo apt install satellite
 ```
 
-Setup details (signing key fingerprint, how publishing works) are at
-[`packaging/repo/README.md`](packaging/repo/README.md).
-
-#### Option B: Standalone `.deb` (Debian / Ubuntu)
-
-Download `satellite_<version>_amd64.deb` from the
-[Releases](https://github.com/TinkerNorth/satellite/releases) page and
-install it directly:
-
-```bash
-sudo apt install ./satellite_*.deb
-```
-
-…or build it yourself with the same CPack flow CI uses:
-
-```bash
-scripts/install-deps.sh   # the linux-ci.yml package set (apt)
-sudo apt install dpkg-dev
-scripts/build-deb.sh
-```
-
-`scripts/build-deb.sh` uses the same `cpack -G DEB` invocation as the
-release workflow's Debian job (which additionally builds inside a
-`debian:trixie` container so the package's Depends line is computed against
-Debian's own sonames).
-
-The postinstall script reloads udev, loads the `uinput` kernel module, adds
-`$SUDO_USER` to the `input` group, and registers the autostart-friendly
-`.desktop` file. Log out and back in once for the group change to take
-effect, then launch **Satellite** from your application menu (or run
-`satellite` from a terminal). Uninstall with `sudo apt remove satellite`.
-
-The CPack DEB generator is wired into the top-level `CMakeLists.txt`; the
-control files and post-{install,remove} scripts live in
-[`packaging/debian/`](packaging/debian/).
-
-#### Option C: DNF/YUM repository (Fedora / RHEL / Rocky / Alma / openSUSE)
+Fedora and the RHEL family: add the DNF repository once, and `dnf upgrade` keeps it current.
 
 ```bash
 sudo curl -fsSL -o /etc/yum.repos.d/satellite.repo \
@@ -442,573 +29,122 @@ sudo curl -fsSL -o /etc/yum.repos.d/satellite.repo \
 sudo dnf install satellite
 ```
 
-The `.repo` file references the same signing key as the APT repo, so
-`dnf upgrade` picks up new versions automatically.
+If you tried the repository with 2.3.0, dnf refused it with "The package is not signed": that package was unsigned, and from 2.4.0 the repository signs it.
 
-#### Option D: Standalone `.rpm`
+If you'd rather not add a repository, [satellite-amd64.deb](https://github.com/TinkerNorth/satellite/releases/latest/download/satellite-amd64.deb) and [satellite-x86_64.rpm](https://github.com/TinkerNorth/satellite/releases/latest/download/satellite-x86_64.rpm) install the same package once (`sudo apt install ./satellite-amd64.deb` or `sudo dnf install ./satellite-x86_64.rpm`), and you install later versions by hand. With any of the packages, log out and back in once after the first install so your user can create virtual controllers.
 
-Download `satellite-<version>-1.x86_64.rpm` from the
-[Releases](https://github.com/TinkerNorth/satellite/releases) page:
+Any other x86_64 Linux: [satellite-x86_64.AppImage](https://github.com/TinkerNorth/satellite/releases/latest/download/satellite-x86_64.AppImage) runs on glibc 2.35 or newer and can update itself. An AppImage can't install the udev rule that lets you create virtual controllers, so you grant access to `/dev/uinput` once yourself; the dashboard shows the exact commands when it's missing.
 
-```bash
-sudo dnf install ./satellite-*.x86_64.rpm
-```
-
-CPack RPM generator config lives next to the DEB config in
-`CMakeLists.txt`; post-{install,uninstall} scriptlets are in
-[`packaging/rpm/`](packaging/rpm/).
-
-#### Option E: Arch Linux (AUR)
-
-The [`satellite-bin`](https://aur.archlinux.org/packages/satellite-bin)
-package wraps the official AppImage:
+Arch Linux: add Satellite's signed pacman repository once, and `pacman -Syu` keeps it current.
 
 ```bash
-yay -S satellite-bin
-# or
-paru -S satellite-bin
+curl -fsSL https://tinkernorth.github.io/satellite/gpg.key | sudo pacman-key --add -
+sudo pacman-key --lsign-key 4371E67B00CB54E69ED34D70428695F4ED61D3A8
+printf '\n[satellite]\nSigLevel = Required DatabaseOptional\nServer = https://tinkernorth.github.io/satellite/arch/$arch\n' \
+  | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu satellite-bin
 ```
 
-PKGBUILD source: [`packaging/aur/`](packaging/aur/).
+If you installed `satellite-bin` 2.3.0, it carried an AppImage that could not start; `sudo pacman -Syu` replaces it with 2.4.0, which does.
 
-#### Option F: Portable build (any distro)
+All files and older versions are on the [releases page](https://github.com/TinkerNorth/satellite/releases), and the repositories have their own page at [tinkernorth.github.io/satellite](https://tinkernorth.github.io/satellite/).
 
-Build:
+### Satellite and the Dish apps
 
-```bash
-scripts/install-deps.sh   # once: the linux-ci.yml package set (apt)
-scripts/build.sh          # Release build -> ./satellite
-```
-
-The same script handles macOS and Linux (it dispatches on `uname -s`). On
-Linux it drives the `linux` preset (the same configure line `linux-ci.yml`
-runs) and produces a `satellite` binary at the repo root. An AppImage
-matching the released one is `scripts/build-appimage.sh`, best run on the
-oldest glibc you intend to support.
-
-Grant `/dev/uinput` access (one-time setup; the `.deb` postinstall does
-this for you):
-
-```bash
-sudo modprobe uinput                                              # load the kernel module
-echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' \
-    | sudo tee /etc/udev/rules.d/99-uinput.rules                  # persistent udev rule
-sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo usermod -aG input "$USER"                                    # then log out / back in
-```
-
-Run:
-
-```bash
-./satellite
-```
-
-#### After install (any path)
-
-Open `http://localhost:9877` in your browser to pair a sender and start the
-receiver. Config lives at `$XDG_CONFIG_HOME/satellite/config.json` (falls
-back to `~/.config/satellite/config.json`); the keyfile is named `keyfile`
-in the same directory (mode `0600`). "Start with login" is wired up via the
-XDG autostart spec: a `.desktop` file under `$XDG_CONFIG_HOME/autostart/`
-toggled from the web UI.
-
-### Building the installer
-
-After `scripts\build.ps1` produces `satellite.exe`, run:
-
-```powershell
-scripts\build-installer.ps1
-```
-
-This fetches the bundled driver prerequisites (verifying SHA-256 against
-the pin in `redist/SHA256SUMS`), publishes the HIDMaestro helper, and
-compiles the installer with [Inno Setup](https://jrsoftware.org/isinfo.php),
-passing `/DMyAppVersion=<content of /VERSION>` the same way the release
-workflow passes the tag. The result is `dist\SatelliteSetup.exe`: one
-installer packaging the app, web UI, ViGEmBus 1.22.0 prerequisite, and
-uninstaller. `redist/` is `.gitignore`d; see
-[`redist/README.md`](redist/README.md) for the vendoring policy and how to
-bump the pin.
-
-`scripts\build-installer.ps1` chains `scripts/fetch-redist.ps1`,
-`dotnet publish`, optional code signing (`scripts/sign.ps1`, gated on the
-`SATELLITE_SIGN_*` / `CLOUD_SIGN_TOOL` environment variables and skipped
-cleanly without them), `iscc`, and `scripts/generate-sbom.ps1`. Invoke any
-piece directly if you're scripting around it (the fetch script accepts
-`-Force` to re-download even when the existing copy matches the pin).
-
-## Usage
-
-Run `satellite.exe`. It starts minimized to the system tray and begins
-listening immediately; there is no start/stop button.
-
-- Right-click the tray icon and choose **Open Web UI** for the dashboard
-- Or open `http://localhost:9877` in your browser
-- Enter the rotating PIN shown on the dashboard (or approve the client-shown
-  PIN) to pair a Dish client; clients then connect on their own
-- Enable **Start with Windows** to auto-launch on boot
-
-Clients (dish-android first) discover the satellite via mDNS, pair over
-HTTPS 9443, and stream input over UDP 9876. The full client/server
-contract is [`docs/contract.md`](docs/contract.md).
-
-## OTA Updates
-
-Satellite ships with a built-in update checker that hits the GitHub Releases
-API on a 24-hour cadence (configurable in **Settings → Updates**). When a
-newer release is published, the dashboard shows a banner with **Download**,
-**Remind Me Later**, and **Skip This Version** actions. The banner, and the
-Updates section of Settings, then follow the update live: the download and its
-progress, verification, a ready-to-install prompt, the restart, and a
-confirmation once the new version is running (or a note that it did not
-finish). **Remind Me Later** and **Install Later** hide the dashboard banner
-until the next check; Settings keeps showing the update. The tray menu's
-*Check for Updates…* item reflects the same state and toggles to *Install
-Update X.Y.Z* once the artifact has been fetched and verified.
-
-The full state machine (`idle → checking → update-available → downloading
-→ verifying → downloaded → installing`) is described in
-[`src/core/update_service.h`](src/core/update_service.h). Platform IO
-(HTTPS, SHA-256, install hand-off) lives behind `IUpdaterPort`:
-
-| Platform | HTTPS    | Artifact                       | Install method |
-|---|---|---|---|
-| Windows | WinHTTP | `SatelliteSetup-X.Y.Z.exe`         | Inno Setup `/VERYSILENT /OTA` then auto-relaunch |
-| macOS   | NSURLSession | `satellite-macos-stub-X.Y.Z.zip` | `ditto -xk` unpack + atomic bundle swap via helper, `open` relaunch |
-| Linux (AppImage) | libcurl | `satellite-X.Y.Z-x86_64.AppImage` | `chmod +x` + atomic mv over `$APPIMAGE`, `setsid` relaunch |
-| Linux (`.deb`) | libcurl | n/a (surfaces command) | `sudo apt upgrade satellite` (auto-pulled from our APT repo if added) |
-| Linux (`.rpm`) | libcurl | n/a (surfaces command) | `sudo dnf upgrade --refresh satellite` (auto-pulled from our DNF repo) |
-| Linux (AUR)    | libcurl | n/a (surfaces command) | `yay -Syu satellite-bin` |
-| Linux (Snap)   | libcurl | n/a (surfaces command) | `sudo snap refresh satellite` |
-| Linux (Flatpak) | libcurl | n/a (surfaces command) | `flatpak update io.github.tinkernorth.satellite` |
-| Linux (portable) | libcurl | n/a (surfaces command) | Manual: `chmod +x` and replace the binary |
-
-Verification is SHA-256 against the `SHA256SUMS` asset published in every
-release (signed by cosign at release time; verifying the cosign signature
-in-app is tracked as a follow-up). Transit is HTTPS-pinned to `github.com`.
-
-**Only Windows, macOS and the Linux AppImage install updates themselves.**
-Every other channel is package-manager territory: Satellite checks for new
-versions and shows you the command, but never downloads or replaces anything —
-self-replacing would desync the package database, and for Snap and Flatpak the
-payload is mounted read-only. On those builds the *Download in background* and
-*Install & restart automatically* settings are disabled, because they could
-never fire.
-
-### Settings (web UI: `/settings` → Updates section)
-
-- **Channel**: *Stable* (only `X.Y.Z` releases) or *Pre-release*
-  (includes `X.Y.Z-rc.1`, `-beta.2`, etc.).
-- **Check automatically**: runs the 24-hour timer thread (skip if disabled).
-- **Download in background**: auto-download an available update so it's
-  ready to install on the next visit.
-- **Install & restart automatically**: only effective with the above two
-  enabled; turns the dashboard banner into a direct restart prompt.
-
-### API
-
-| Method | Path                       | Purpose                                        |
-|---|---|---|
-| GET    | `/api/version`             | `{version, platformId}`, unauthenticated       |
-| GET    | `/api/updates/status`      | Full `UpdateStatusSnapshot` JSON               |
-| POST   | `/api/updates/check`       | Trigger a check now                            |
-| POST   | `/api/updates/download`    | Fetch the artifact                             |
-| POST   | `/api/updates/install`     | Apply the downloaded artifact (will restart)   |
-| POST   | `/api/updates/repair`      | Re-fetch and re-run the current installer (drivers) |
-| POST   | `/api/updates/retry`       | Retry the step that failed: check, download or install |
-| POST   | `/api/updates/cancel`      | Cancel an in-flight download                   |
-| POST   | `/api/updates/dismiss`     | "Remind me later" / "Install later": sets `dismissed` until the next check |
-| POST   | `/api/updates/skip`        | `{version}`; never notify about this version again |
-| POST   | `/api/updates/preferences` | `{channel, autoCheck, autoDownload, autoInstall}` |
-
-Every `POST /api/updates/*` action replies with the snapshot as it stands
-right after the request, so a request the updater accepted already shows
-its new state (`checking`, `downloading`, `installing`) and one it refused
-shows why. The `/api/events` SSE stream carries an `update` event channel
-that pushes the same snapshot every tick, so the web UI stays current
-without polling.
-
-### Bumping the version
-
-Edit three files in lockstep:
-
-1. [`/VERSION`](VERSION): consumed by CMake (`MACOSX_BUNDLE_*`, `CPACK_PACKAGE_VERSION`)
-   and by `installer.iss` at preprocess time.
-2. [`src/core/version.h`](src/core/version.h): consumed by C++ and by
-   `satellite.rc` (through `windres`'s preprocessor).
-3. [`vcpkg.json`](vcpkg.json): the MSVC lane's manifest, which does not read `/VERSION`.
-
-The `version-consistency` CI gate fails if they diverge. Then add the version's
-`<release>` at the top of
-[`packaging/io.github.tinkernorth.satellite.metainfo.xml`](packaging/io.github.tinkernorth.satellite.metainfo.xml),
-which GNOME Software, KDE Discover and Flathub show; no gate checks that one.
-
-## Architecture
-
-The receiver runs six long-lived threads on every platform:
-
-| Thread       | Role                                                        |
-|--------------|-------------------------------------------------------------|
-| **Main**     | Platform UI loop (tray icon, native pairing prompts); a headless signal wait on Linux without a tray |
-| **Receiver** | UDP input socket → decrypt → gamepad-backend submit (the hot path); spawns the session reaper |
-| **Client API** | HTTPS 9443 ([cpp-httplib](https://github.com/yhirose/cpp-httplib)): pairing, sessions, catalog |
-| **Admin HTTP** | Loopback 9877: web UI, admin API, SSE                     |
-| **Discovery beacon** | Legacy UDP broadcast on 9879 for senders that predate the mDNS responder (toggleable; slated for removal in 2027) |
-| **mDNS responder** | Advertises `_satellite._udp.local.` on 5353           |
-
-Platforms add small helpers on top: a netlink interface watcher on Linux, an
-address-change watcher on Windows, where a timer on the main thread's window
-keeps the tray tooltip current. The updater and the per-device rumble
-listeners (see below) run on their own worker threads.
-
-## Why UDP?
-
-TCP's reliability guarantees cause head-of-line blocking: if one packet is lost, all subsequent packets are held until retransmission completes. For controller input, only the latest state matters, so a lost packet is better than a delayed one. Moonlight, Parsec, and Steam Remote Play take the same approach.
-
-## Rumble (return path)
-
-Games drive controller vibration by writing to the virtual gamepad device's
-output channel. Satellite snapshots those writes from the platform backend
-and forwards them to the dish that owns the session, which then actuates
-the matching physical controller (or, on dish-android, the phone itself).
-
-### How each backend listens
-
-| Platform | Source | Mechanism |
-|---|---|---|
-| Windows | ViGEmBus | `IOCTL_XUSB_REQUEST_NOTIFICATION` (X360) / `IOCTL_DS4_REQUEST_NOTIFICATION` (DS4), long-running async I/O. One worker thread per plugged virtual device blocks on the IOCTL until the driver completes it with the new motor/lightbar values. |
-| Linux | uinput | `EV_FF` events on the device fd. Game uploads an `FF_RUMBLE` effect via `UI_FF_UPLOAD`, kernel hands us the descriptor, then sends an `EV_FF` event when the game presses play/stop. One reader thread per plugged device. |
-| macOS | IOHIDUserDevice | The game writes DS4 output report `0x05`; the kernel delivers it to the device's set-report block on a per-device dispatch queue. The adapter parses motors + lightbar RGB (valid-flag gated) and fans out to the rumble and lightbar callbacks. Entitled builds only: an unentitled build has no virtual pads, so no rumble events exist to forward. |
-
-### Wire format
-
-`MSG_RUMBLE = 0x0009`, satellite to dish, encrypted in the same ChaCha20-Poly1305 envelope as every other message:
-
-```
-inner header                           inner payload (7 bytes)
-┌──────────┬──────────┐  ┌──────────┬─────────────┬─────────────┬──────────┐
-│ msgType  │ payload  │  │ ctrlIdx  │  strongMag  │   weakMag   │  durMs   │
-│  0x0009  │  length  │  │   u8     │   u16 BE    │   u16 BE    │  u16 BE  │
-└──────────┴──────────┘  └──────────┴─────────────┴─────────────┴──────────┘
-   2 bytes    2 bytes        1            2             2            2
-```
-
-| Field | Meaning |
+| App | Where to get it |
 |---|---|
-| `ctrlIdx` | Controller index within the dish session that owns this rumble. |
-| `strongMag` | Low-frequency / large-motor magnitude. 0..65535, XInput scale. |
-| `weakMag` | High-frequency / small-motor magnitude. 0..65535. |
-| `durMs` | Wire-side refresh deadline. Stamped by the satellite (default 500 ms); the dish clamps before driving its actuator. `0` is a stop sentinel. |
+| Satellite (Windows, Linux) | [GitHub releases](https://github.com/TinkerNorth/satellite/releases/latest) |
+| Dish for Android | [Google Play](https://play.google.com/store/apps/details?id=com.tinkernorth.dish), or the APK from [GitHub releases](https://github.com/TinkerNorth/dish-android/releases/latest) |
+| Dish for iOS | Not yet released |
+| Dish for macOS | [GitHub releases](https://github.com/TinkerNorth/dish-mac/releases/latest) |
+| Dish for Windows | [GitHub releases](https://github.com/TinkerNorth/dish-windows/releases/latest) |
+| Dish for Linux | [GitHub releases](https://github.com/TinkerNorth/dish-linux/releases/latest) |
 
-Rumble carries motor vibration only; the lightbar LED is a separate message
-([Lightbar return path](#lightbar-return-path)).
+## Getting started
 
-The producer side lives in [`src/adapters/client_adapter.cpp`](src/adapters/client_adapter.cpp). The dish-side parsers (`SatelliteClient::parseRumbleMessage` in dish-linux/windows, `SatelliteClient.parseRumblePayload` in dish-mac, the JNI dispatch in `RumbleBridge.dispatchRumble` on dish-android) all consume this layout verbatim.
+1. Install Satellite on the PC you play on and start it. It lives in the system tray: right-click the icon and pick Open Web UI to open the dashboard. On that PC the dashboard is also at http://localhost:9877.
+2. Install a Dish app on the device with your controller. It has to be on the same local network as the PC.
+3. Pair them. The dashboard shows a 4-digit PIN under Device Pairing, with a new one every five minutes. In Dish, find the PC (Dish for Android has a Scan button), pick it and type the PIN. If Dish shows you a PIN instead, the request appears under Pairing Requests on the dashboard; accept it only if the two PINs match. Satellite remembers the device, so you only pair once.
+4. Play. The controller reaches your games as an Xbox 360 Controller, DualShock 4, DualSense, DualSense Edge or Switch Pro Controller, whichever you choose in Dish (in Dish for Android it's the Emulate as setting). The dashboard lists every connected controller.
 
-### Coalescing
+## What it does
 
-Games can spam the same magnitudes 60+ Hz across many frames. The
-`SessionService::handleRumbleFromBackend` path keeps the most recent
-`(strong, weak)` per controller and suppresses re-emits when nothing changed.
-Duration-only changes never defeat the suppression: the wire-side refresh
-deadline is a knob the satellite owns, not a player-perceptible value.
+Satellite creates a virtual controller on the PC for each controller a Dish app sends, up to 16 at once, and passes back what the game sends to it. Input travels over UDP on your own network, encrypted with a key the two devices agree on when they pair.
 
-### Per-dish actuator behaviour
+All five controller types work on Windows and on Linux. What else reaches the game depends on the type you pick and on the PC:
 
-| Dish | Actuator | Notes |
+| | Windows | Linux |
 |---|---|---|
-| dish-windows | `SDL_GameControllerRumble` | Magnitudes pass through verbatim (XInput scale matches). Vibration only; the lightbar LED is a decoupled path as of Task 1.4. |
-| dish-linux | Same SDL2 entry point | Underlying call is evdev `EVIOCSFF`. Works for any pad SDL recognises. |
-| dish-mac | `GCController.haptics` + `CHHapticEngine` per locator | Magnitudes mapped to `CHHapticIntensity` 0..1. Engines kept started; per-call `CHHapticPattern` for sustained drive. Falls back to no-op on legacy MFi pads with no haptics surface. Vibration only; lightbar is decoupled. |
-| dish-android | `VibratorManager` (API 31+) / `Vibrator` (legacy), phone body | All rumble routed to the device's own actuator(s). On dual-actuator phones the strong motor goes to vibrator id 0 and weak to id 1; on single-actuator phones the peak of the two is used. No fallback to physical-controller actuators by design (see `RumbleBridge.kt`). |
+| Rumble | Yes | Yes |
+| Motion (gyro and accelerometer) | DualShock 4, DualSense, DualSense Edge, Switch Pro | The same |
+| Touchpad | DualShock 4, DualSense, DualSense Edge | The same |
+| Light bar colour | DualShock 4, DualSense, DualSense Edge | No |
+| Adaptive triggers | DualSense, DualSense Edge | No |
+| Controller microphone and speaker | DualShock 4, DualSense, DualSense Edge | No |
+| DualSense HD haptics | DualSense, DualSense Edge | No |
+| Back paddles | DualSense Edge | DualSense Edge |
+| Switch Capture button | Switch Pro | Switch Pro |
 
-## Lightbar (return path)
+The back buttons of an Xbox Elite pad, a DualSense Edge or a Steam Controller travel from Dish to the PC, and a virtual DualSense Edge is the type that has back buttons to put them on. No DualSense Edge has met Satellite on Linux yet, so I haven't been able to confirm the paddles there.
 
-Task 1.4. A game can drive a DualSense / DualShock 4's RGB lightbar
-independently of vibration, and plenty of games set a colour and never rumble.
-Satellite forwards those colour changes on a dedicated stream, decoupled from
-`MSG_RUMBLE`.
+Games that vibrate a DualSense through Sony's own library send that vibration as audio. Satellite forwards it as the waveform to a Dish app that can play it on a real DualSense, and turns it into ordinary rumble for every other controller. The pad's microphone and speaker show up in Windows as the controller's own sound devices, so voice chat works through the controller on the Dish side.
 
-### Capability gate
+Each controller card on the dashboard has a Test button. It sends that controller a short rumble, a white light bar, the first player LED and a light trigger resistance, each only where the controller has it, then puts back whatever the game had set after two seconds. The card also shows the last thing the game sent to that controller and when, so between the two you can tell whether a missing rumble starts in the game or further along.
 
-A dish advertises `lightbar` in its controller descriptor's `caps` object
-(the session PUT; see [`docs/contract.md`](docs/contract.md)) when the bound
-physical controller has an addressable RGB LED (a DualSense or DS4, not an
-Xbox pad, and never on dish-android, which has no controller-LED API). The
-satellite emits `MSG_LIGHTBAR` only to a controller that advertised the
-capability; a dish that did not receives no lightbar traffic.
+Satellite doesn't stream video. If you stream your games with Moonlight from Sunshine or Apollo, Satellite runs beside it and carries the controller. Dish for Android can also be a controller for a Sunshine, Apollo or Wolf host directly, without Satellite.
 
-### Wire format
+## Requirements
 
-`MSG_LIGHTBAR = 0x000D`, satellite to dish, in the same ChaCha20-Poly1305
-envelope as every other message:
+Windows: Windows 10 or 11, 64-bit. Installing needs administrator rights once; Satellite itself runs as your normal user. The installer puts Satellite in Program Files, two drivers that create the virtual controllers (ViGEmBus, a kernel driver, for the Xbox 360 and DualShock 4, and HIDMaestro, a user-mode driver that adds the DualSense, DualSense Edge and Switch Pro), a small service that lets Satellite create HIDMaestro controllers without asking for administrator rights each time, and firewall rules for private and domain networks. The first time an emulated controller with a microphone and speaker is created, HIDMaestro also installs its signed kernel USB transport; turning off Settings, Controller audio prevents that. The uninstaller asks separately whether to remove each driver, because other programs often share them.
 
-```
-inner header                           inner payload (4 bytes)
-┌──────────┬──────────┐  ┌──────────┬──────────┬──────────┬──────────┐
-│ msgType  │ payload  │  │ ctrlIdx  │    R     │    G     │    B     │
-│  0x000D  │  length  │  │   u8     │   u8     │   u8     │   u8     │
-└──────────┴──────────┘  └──────────┴──────────┴──────────┴──────────┘
-   2 bytes    2 bytes        1           1          1          1
-```
+Because the firewall rules leave public networks out, Dish can't find the PC while Windows treats your home network as public.
 
-### How it is produced
+Linux: an x86_64 machine with the kernel's `uinput` module, which every mainline kernel has. The .deb is built on Debian 13, the .rpm on Fedora. The tray icon uses AppIndicator, so stock GNOME shows no icon without its AppIndicator extension; the dashboard at http://localhost:9877 works either way.
 
-On Windows the ViGEm DS4 driver delivers rumble and lightbar in the same
-`IOCTL_DS4_REQUEST_NOTIFICATION` completion. `vigem_adapter`'s notification
-worker fans that one event out to two sinks: the rumble callback (motors) and
-the lightbar callback (colour). `SessionService::handleLightbarFromBackend`
-resolves the backend serial to `(connection, ctrlIdx)`, coalesces identical
-back-to-back colours, and, for a `CAP_LIGHTBAR` dish, calls
-`IClientPort::sendLightbar`. The colour is cached on the `Controller`
-regardless of the capability, so the web dashboard's per-controller lightbar
-swatch stays live for every controller type.
+Network: the PC and the Dish device on the same local network. Satellite listens on UDP 9876 for input, TCP 9443 for pairing, UDP 5353 for discovery (mDNS) and UDP 9879 for an older discovery beacon. The dashboard on port 9877 answers only on the PC itself.
 
-On macOS, the same DS4 output report `0x05` that carries the motors also
-carries the lightbar colour; the IOHIDUserDevice set-report path fans it out
-to the lightbar callback when the report's colour-valid flag is set (entitled
-builds only). The Linux uinput backend has no host-driven lightbar channel
-(EV_LED is single-bit), so it never emits `MSG_LIGHTBAR`, and the backend
-registry advertises `lightbar: false` for its Sony types so the catalog never
-offers a colour that cannot arrive. Lightbar emission is a Windows
-(ViGEm-DS4 and HIDMaestro DS4/DualSense) and macOS / IOHID-DS4 feature today.
+macOS: not supported. Creating a virtual controller on a Mac needs an entitlement from Apple that no Satellite build has. The release page carries a macOS build, but it is a stub: it runs the dashboard, creates no controllers, and needs Homebrew's libsodium, OpenSSL and opus installed to start.
 
-### Per-dish actuator behaviour
+## Trust and privacy
 
-| Dish | Actuator | Notes |
-|---|---|---|
-| dish-windows / dish-linux | `SDL_GameControllerSetLED` | Marshalled onto the SDL thread; a no-op on a pad SDL reports no LED for. |
-| dish-mac | `GCDeviceLight.color` (`GCColor`) | Applied on the main actor. |
-| dish-android | none | No controller-LED API: an arriving `MSG_LIGHTBAR` is logged and dropped, and `CAP_LIGHTBAR` is never advertised. |
-
-## Code Quality
-
-Formatting, linting, and static analysis run through standard C++ tooling.
-
-### Tools
-
-| Tool | Purpose | Config file | Equivalent in JS |
-|------|---------|-------------|------------------|
-| **clang-format** | Auto-formatting | `.clang-format` | Prettier |
-| **clang-tidy** | Linting & modernization | `.clang-tidy` | ESLint |
-| **cppcheck** | Deep static analysis (leaks, UB, bounds) | n/a | n/a |
-
-### Installing
-
-CI pins **clang-format 22.1.4** on all three platforms so verdicts match
-across runners; install the same pin locally. `scripts/install-deps.ps1` and
-`scripts/install-deps.sh` do this for you, or by hand:
-
-```powershell
-python -m pip install clang-format==22.1.4   # Windows (pip wheel, same as CI)
-```
+Every release has a `SHA256SUMS` file signed with cosign by the release workflow. To check a download on Linux, put `SHA256SUMS` beside it and run:
 
 ```bash
-python3 -m venv ~/.clang-format-venv \
-  && ~/.clang-format-venv/bin/pip install clang-format==22.1.4   # Linux and macOS (same as CI)
+sha256sum --ignore-missing -c SHA256SUMS
 ```
 
-clang-tidy and cppcheck are optional extras via
-[winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/)
-(a floating LLVM also ships its own clang-format; the pinned 22.1.4 is the
-one the format gate trusts):
+On Windows, `Get-FileHash .\SatelliteSetup.exe` in PowerShell gives the hash to compare with the line in `SHA256SUMS`. [SECURITY.md](SECURITY.md) has the signature and build provenance checks, and how to report a vulnerability.
 
-```powershell
-winget install LLVM.LLVM             # clang-tidy (included in full LLVM)
-winget install Cppcheck.Cppcheck     # cppcheck
-```
+The Windows installer is not code-signed yet. I don't have a certificate, so 2.4.0 ships unsigned (the versioned copy on the release page is named `SatelliteSetup-2.4.0-unsigned.exe`), and SmartScreen will say the publisher is unknown. The checksum and its signature are how you can tell it came from this repository's release.
 
-After installing, restart your terminal so the tools are on your `PATH`.
+Satellite works on your own network and has no account, no analytics and no ads. Three things can leave your PC, and each has a switch in Settings: a daily check for a new version against GitHub, a check for a newer controller database at dish.tinkernorth.com, and, if Satellite crashes, one crash report to Sentry. Crash reports are on by default, and the Windows installer asks about them and the update check. Controller input and audio never leave your network. The diagnostics file on the Debug page is something you save and send yourself; Satellite never sends it. [PRIVACY.md](PRIVACY.md) says exactly what is stored and sent.
 
-### Usage
+Satellite is licensed under the GNU Lesser General Public License v3.0 or later ([LICENSE](LICENSE), with [COPYING.GPL3](COPYING.GPL3)). The third-party components and their licences are in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-**Check formatting exactly like CI** (every lane runs this same script over
-`src/` and `tests/`, `*.cpp` / `*.h` / `*.mm`):
+## For developers
+
+Satellite is C++20 with CMake. The presets in `CMakePresets.json` (`release`, `debug`, `package`, and `windows-mingw`, `windows-mingw-debug` and `windows-msvc` on Windows) carry the same flags CI uses, warnings as errors included, and the scripts drive them:
 
 ```bash
-bash scripts/check-format.sh
+scripts/install-deps.sh          # once: the toolchain CI installs
+scripts/build.sh release test    # build, then run the tests
+scripts/ci-local.sh              # what the main CI jobs run, in their order
 ```
 
-**Format all source files in place** (the same file set):
+On Windows the same three are `scripts\install-deps.ps1`, `scripts\build.ps1 release test` and `scripts\ci-local.ps1`, and `scripts\build-installer.ps1` builds the installer. `scripts/ci-local.sh --with-packages` adds the .deb and .rpm builds in containers.
 
-```bash
-find src tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \) -print0 | xargs -0 clang-format -i
-```
+Where things are written down:
 
-**Lint with clang-tidy:**
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the server is built, the hexagonal core, the Windows drivers and the elevation story.
+- [docs/contract.md](docs/contract.md): the protocol between Dish and Satellite, the single source of truth for every client.
+- [docs/threading.md](docs/threading.md): the threads, the locks and the rules for changing them.
+- [docs/PACKAGING.md](docs/PACKAGING.md): every Linux channel, why Flathub and the Snap Store are out, and Windows signing.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release.
 
-```powershell
-clang-tidy src/core/*.cpp src/net/*.cpp src/adapters/*.cpp src/platform/windows/*.cpp -- -std=c++17 -Ivigem/include -Isrc -Ilib -Ilib/libsodium/libsodium-win64/include -D_WIN32_WINNT=0x0A00 -DCPPHTTPLIB_NO_EXCEPTIONS
-```
+[CONTRIBUTING.md](CONTRIBUTING.md) covers where code goes, the code style, the tests and how a release is cut. Please read it before opening a pull request.
 
-**Run cppcheck:**
+## Getting help
 
-```powershell
-cppcheck --enable=all --std=c++17 --suppress=missingIncludeSystem -Ivigem/include -Isrc -Ilib -Ilib/libsodium/libsodium-win64/include src/
-```
+If something doesn't work, open an issue at [github.com/TinkerNorth/satellite/issues](https://github.com/TinkerNorth/satellite/issues/new/choose). The most useful thing you can attach is the diagnostics file: on the dashboard's Debug page, use Report a problem, say what happened, and press Save the file and write the email. The file leaves out pairing keys, PINs, addresses and device names; read it before you attach it, it's plain JSON. If you'd rather write to me than open an issue, the Email support@tinkernorth.com link beside that button starts a mail with the details filled in; attach the file to it yourself.
 
-### Editor Integration
-
-- **VS Code:** Install the [clang-format](https://marketplace.visualstudio.com/items?itemName=xaver.clang-format) extension and set it as your default C++ formatter. Format-on-save will use the `.clang-format` config automatically.
-- **clang-tidy** warnings appear inline if you use [clangd](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) as your language server.
-
-## Testing
-
-Unit tests use mock implementations of the port interfaces; no external test
-framework is required. CMake registers every suite with CTest:
-
-```powershell
-scripts\build.ps1 release test    # Windows (preset windows-mingw)
-```
-
-```bash
-scripts/build.sh release test     # Linux / macOS (preset linux / macos)
-```
-
-Or drive the presets directly; each carries its CI lane's exact flags:
-
-```powershell
-cmake --preset windows-mingw      # or: linux, macos, windows-msvc
-cmake --build --preset windows-mingw
-ctest --preset windows-mingw
-```
-
-Before pushing, `scripts\ci-local.ps1` (Windows) or `scripts/ci-local.sh`
-(Linux / macOS) runs every gate the PR workflows run, in the same order:
-format check, action-pin lint, core purity (Linux/macOS), configure + build +
-ctest via the presets, and the helper publish (Windows). A missing tool fails
-the run unless you pass `-AllowMissing` / `--allow-missing`.
-
-### Suites
-
-| Suite | Covers |
-|---|---|
-| `session_service` | Declarative session upsert/converge, transactional replug, serial round-robin + quarantine, epoch/bitmap, close-notify ordering, liveness grace + reap, host-feature grants, data streams |
-| `receiver` | Inner-message length guards, wire decode, deleted-opcode drop |
-| `test_catalog` | Catalog JSON, Accept-Language resolution, ETag, locale completeness gate |
-| `test_json` | Shared nlohmann/json helpers (tolerant accessors, ordered output) |
-| `pairing` | Path-B pairing request registry lifecycle |
-| `mdns_protocol` / `test_discovery` / `test_machine_id` | Discovery + identity |
-| `test_codecs` / `test_ipv4_util` | Pure codecs (touchpad pack, IPv4 fast path) |
-| `test_github_release` / `test_update_service` | OTA updater |
-| `windows_platform` | Config persistence, autostart, hex/JSON helpers, HKDF + hmacProof + packet-AEAD vectors |
-| `vigem_adapter` | Synchronous submit policy, DS4 EX fallback, observable unplug |
-| `linux_platform` (Linux only) | Linux config/adapters |
-
-## Project structure
-
-```
-├── src/
-│   ├── core/                   # Pure domain logic (no platform deps)
-│   │   ├── types.h             # Data structs, protocol constants, enums
-│   │   ├── ports.h             # Outbound port interfaces (hexagonal)
-│   │   ├── session_service.*   # Declarative session/controller converge
-│   │   ├── catalog.*           # /api/catalog builder + locale resolution
-│   │   ├── json.h              # Shared nlohmann/json facade (build + parse)
-│   │   ├── config_json.h       # Portable Config (de)serialization
-│   │   └── update_service.*    # OTA update state machine
-│   ├── net/                    # Shared transport layer (all platforms)
-│   │   ├── receiver.cpp        # UDP recv/decrypt hot loop
-│   │   ├── inner_dispatch.cpp  # Inner-message parser + length guards
-│   │   ├── webserver.cpp       # Server shells: HTTPS client API + loopback admin
-│   │   ├── routes_client.cpp   # Sender-facing routes: pairing, sessions, catalog
-│   │   ├── routes_admin.cpp    # Admin web UI routes + SSE
-│   │   ├── routes_common.cpp   # Helpers shared by both route tables
-│   │   ├── session_crypto.*    # HKDF session keys, hmacProof, packet AEAD
-│   │   ├── pairing*.{h,cpp}    # PIN pairing + Path-B request registry
-│   │   ├── pin_rotation.cpp    # Rotating pair PIN + shared crypto helpers
-│   │   └── discovery / mdns_*  # mDNS responder + legacy beacon
-│   ├── adapters/               # Portable adapters
-│   │   ├── client_adapter.*    # IClientPort: encrypted UDP downstream
-│   │   └── log_adapter.*       # ILogPort: ring buffer logger
-│   └── platform/
-│       ├── windows/            # main, tray, config, ViGEm adapter (vigem*.{h,cpp})
-│       ├── linux/              # main, tray, config, uinput adapter
-│       ├── macos/              # main, tray, config, IOHIDUserDevice DS4 adapter
-│       └── posix/              # config/crypto shared by the linux + macos builds
-├── tests/                      # Self-contained suites (no framework), one per area
-├── docs/
-│   ├── contract.md             # THE client ↔ server protocol contract
-│   └── architecture.md         # Server internals
-├── lib/                        # cpp-httplib + libsodium (vendored)
-├── vigem/include/ViGEm/        # ViGEm driver headers
-├── web/                        # Admin web UI + lang catalogs + catalog images
-├── .clang-format               # Code formatting rules
-├── .clang-tidy                 # Linting checks
-├── LICENSE                     # LGPL-3.0-or-later
-└── README.md
-```
-
-## Security
-
-PR-time security gates ([`.github/workflows/security.yml`](.github/workflows/security.yml)
-and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml)) run on
-every PR: action-pin lint, OSV-Scanner against vendored components,
-gitleaks, GitHub `dependency-review-action`, allowlist-expiry check, and
-CodeQL `cpp` analysis. See [`CONTRIBUTING.md`](CONTRIBUTING.md#security)
-for the local-equivalent commands and the per-release verification recipe
-(`cosign verify-blob` + `slsa-verifier verify-artifact`). Vulnerability
-disclosure: [`SECURITY.md`](SECURITY.md).
-
-> **Branch protection.** `main` requires the CI workflows
-> (`linux-ci.yml`, `macos-ci.yml`, `windows-ci.yml`, `windows-msvc-ci.yml`,
-> `security.yml`, `codeql.yml`) to pass before a pull request can merge.
-
-## Privacy
-
-Satellite runs on your own PC and talks to your own Dish clients over your
-own network. Two things can leave the machine: the update check against
-GitHub Releases, and, with *Share crash reports* on, a crash report to
-Sentry. Both can be turned off in Settings, and the installer asks about both
-on first install (`/UPDATECHECK=no` and `/CRASHREPORTS=no` for a silent
-install). [`PRIVACY.md`](PRIVACY.md) has the full list of what is stored,
-what is sent, and to whom.
-
-## Code signing policy
-
-Free code signing on Windows provided by [SignPath.io](https://signpath.io),
-certificate by [SignPath Foundation](https://signpath.org). Signed releases
-start once SignPath Foundation approves the project; until then the installer
-is unsigned and SmartScreen warns on first run.
-
-Committers, reviewers and approvers:
-[@emir-hasanbegovic](https://github.com/emir-hasanbegovic), owner of the
-[TinkerNorth](https://github.com/orgs/TinkerNorth/people?query=role%3Aowner)
-organisation. Only the release workflow signs, from a tagged commit; no local
-build is ever signed. Signed artifacts: `SatelliteSetup.exe`, `satellite.exe`,
-`crashpad_handler.exe`, `crashpad_wer.dll` and `satellite-hm-helper.exe`.
-
-Privacy: two things can leave your PC, and both can be turned off in Settings
-and at install time: the update check against GitHub Releases and, with
-*Share crash reports* on, a crash report to Sentry. [`PRIVACY.md`](PRIVACY.md)
-lists what is stored and sent. Third-party components in the signed package:
-sentry-native and Crashpad, the crash reporter described in `PRIVACY.md`
-section 5, and the bundled ViGEmBus installer and HIDMaestro driver and
-helper, under the licences listed below.
-
-## License
-
-Distributed under the terms of the **GNU Lesser General Public License v3.0
-or later**. See [`LICENSE`](LICENSE) (LGPL) and [`COPYING.GPL3`](COPYING.GPL3)
-(the GPL v3 the LGPL incorporates by reference).
-
-### Vendored third-party components
-
-The following components retain their original (MIT-compatible) licenses
-and are redistributed unchanged under their own terms:
-
-- [cpp-httplib](https://github.com/yhirose/cpp-httplib) by Yuji Hirose (MIT)
-- ViGEm header definitions derived from [nefarius/ViGEmBus](https://github.com/nefarius/ViGEmBus) (MIT)
-
-### Linked third-party components
-
-Official release builds also link:
-
-- [sentry-native](https://github.com/getsentry/sentry-native) by Functional
-  Software, Inc. (MIT), the crash reporter behind the *Share crash reports*
-  switch. Windows builds ship its crash handler,
-  [Crashpad](https://chromium.googlesource.com/crashpad/crashpad)
-  (Apache-2.0), as `crashpad_handler.exe` and `crashpad_wer.dll` beside
-  `satellite.exe`. See [`PRIVACY.md`](PRIVACY.md) for what a crash report
-  contains.
-
+Please also say which Satellite version you run and how you installed it, your operating system, which Dish app and version you use, and which controller. If the problem is in a Dish app rather than on the PC, its own repository is the better place. For a security problem, don't open a public issue; [SECURITY.md](SECURITY.md) says how to report it privately.

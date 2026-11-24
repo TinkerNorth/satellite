@@ -19,7 +19,10 @@ using namespace satellite::hidmaestro;
 namespace {
 
 // A section as the helper hands it over: zero-filled, head at 0.
-std::vector<uint8_t> freshSection() { return std::vector<uint8_t>(AUDIO_SECTION_SIZE, 0); }
+std::vector<uint8_t> freshSection() {
+    std::vector<uint8_t> section(AUDIO_SECTION_SIZE, 0); // a size, not a list
+    return section;
+}
 
 std::vector<int16_t> ramp(size_t n, int16_t start = 0) {
     std::vector<int16_t> v(n);
@@ -28,7 +31,7 @@ std::vector<int16_t> ramp(size_t n, int16_t start = 0) {
 }
 
 uint32_t u32at(const uint8_t* p, size_t off) {
-    uint32_t v;
+    uint32_t v = 0;
     std::memcpy(&v, p + off, sizeof(v));
     return v;
 }
@@ -164,7 +167,7 @@ static void test_lap_skip() {
     EXPECT_EQ(pkt.seq, (uint16_t)(total - static_cast<int>(AUDIO_RING_SLOTS)));
 
     TEST("after the skip the remaining batches drain in order to the newest");
-    uint16_t expected = static_cast<uint16_t>(pkt.seq + 1);
+    auto expected = static_cast<uint16_t>(pkt.seq + 1);
     while (readNextAudioSlot(sec.data(), last, pkt)) {
         EXPECT_EQ(pkt.seq, expected);
         expected++;
@@ -299,19 +302,18 @@ static void test_oversized_sample_count_is_clamped() {
 }
 
 int main() {
-    test_layout_offsets();
-    test_write_read_round_trip();
-    test_negative_samples_survive();
-    test_in_order_stream();
-    test_capacity_guard();
-    test_lap_skip();
-    test_torn_write_rejected();
-    test_foreign_sequence_rejected();
-    test_head_advances_and_wraps_slots();
-    test_stream_sequence_wraps();
-    test_serial_is_carried_for_the_reader_to_check();
-    test_oversized_sample_count_is_clamped();
-
-    std::cout << "hidmaestro_audio_wire: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("hidmaestro_audio_wire", [] {
+        test_layout_offsets();
+        test_write_read_round_trip();
+        test_negative_samples_survive();
+        test_in_order_stream();
+        test_capacity_guard();
+        test_lap_skip();
+        test_torn_write_rejected();
+        test_foreign_sequence_rejected();
+        test_head_advances_and_wraps_slots();
+        test_stream_sequence_wraps();
+        test_serial_is_carried_for_the_reader_to_check();
+        test_oversized_sample_count_is_clamped();
+    });
 }

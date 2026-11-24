@@ -339,13 +339,13 @@ static void test_log_tail() {
 }
 
 int main() {
-    test_envelope();
-    test_controllers();
-    test_grants_and_counters();
-    test_log_scope();
-    test_log_scope_ignores_chosen_names();
-    test_redaction();
-    test_log_tail();
-    std::cout << "connection_diagnostics: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("connection_diagnostics", [] {
+        test_envelope();
+        test_controllers();
+        test_grants_and_counters();
+        test_log_scope();
+        test_log_scope_ignores_chosen_names();
+        test_redaction();
+        test_log_tail();
+    });
 }

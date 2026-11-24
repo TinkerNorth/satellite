@@ -8,11 +8,12 @@
 // webserver route owns key minting and persistence.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
-enum class PairRequestState {
+enum class PairRequestState : uint8_t {
     None,     // no request outstanding for this device
     Pending,  // awaiting operator accept/deny on the satellite dashboard
     Approved, // operator accepted; the shared key is staged for one poll

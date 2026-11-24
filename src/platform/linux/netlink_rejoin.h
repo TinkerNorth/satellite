@@ -17,15 +17,18 @@
 namespace netwatch {
 
 // True when the batch carries at least one address or link lifecycle message.
-// Iteration is bounded by NLMSG_OK, which rejects truncated headers and
-// lengths that overrun the buffer; `remaining` stays an int (like iproute2)
-// because NLMSG_NEXT's subtraction may briefly go negative on the final
-// aligned message and must not wrap.
+// The walk is NLMSG_OK / NLMSG_NEXT's, in size_t: a header must fit in what is
+// left, its length must cover a header and stay inside the batch, and the next
+// message starts at the aligned length, so the walk ends once that steps past
+// the end. (The macros compare the kernel's unsigned length with an int.)
 inline bool batchWantsRejoin(const void* buf, size_t len) {
     if (buf == nullptr || len > static_cast<size_t>(INT_MAX)) return false;
-    const struct nlmsghdr* nh = static_cast<const struct nlmsghdr*>(buf);
-    for (int remaining = static_cast<int>(len); NLMSG_OK(nh, remaining);
-         nh = NLMSG_NEXT(nh, remaining)) {
+    const auto* at = static_cast<const unsigned char*>(buf);
+    size_t remaining = len;
+    while (remaining >= sizeof(struct nlmsghdr)) {
+        const auto* nh = reinterpret_cast<const struct nlmsghdr*>(at);
+        const size_t messageLen = nh->nlmsg_len;
+        if (messageLen < sizeof(struct nlmsghdr) || messageLen > remaining) return false;
         switch (nh->nlmsg_type) {
         case RTM_NEWADDR:
         case RTM_DELADDR:
@@ -37,6 +40,10 @@ inline bool batchWantsRejoin(const void* buf, size_t len) {
         default:
             break;
         }
+        const size_t step = NLMSG_ALIGN(messageLen);
+        if (step >= remaining) return false;
+        at += step;
+        remaining -= step;
     }
     return false;
 }

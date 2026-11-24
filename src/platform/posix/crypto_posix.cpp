@@ -9,6 +9,7 @@
 // helpers live in net/pin_rotation.cpp.
 #include "crypto.h"
 #include "config.h"
+#include "core/base64.h"
 
 #include <sodium.h>
 
@@ -18,41 +19,6 @@
 
 #include <cerrno>
 #include <cstring>
-
-static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static std::string base64Encode(const std::vector<uint8_t>& data) {
-    std::string out;
-    int val = 0, bits = -6;
-    for (uint8_t c : data) {
-        val = (val << 8) + c;
-        bits += 8;
-        while (bits >= 0) {
-            out.push_back(b64chars[(val >> bits) & 0x3F]);
-            bits -= 6;
-        }
-    }
-    if (bits > -6) out.push_back(b64chars[((val << 8) >> (bits + 8)) & 0x3F]);
-    while (out.size() % 4) out.push_back('=');
-    return out;
-}
-
-static std::vector<uint8_t> base64Decode(const std::string& s) {
-    std::vector<int> T(256, -1);
-    for (int i = 0; i < 64; i++) T[(int)b64chars[i]] = i;
-    std::vector<uint8_t> out;
-    int val = 0, bits = -8;
-    for (char c : s) {
-        if (T[(unsigned char)c] == -1) break;
-        val = (val << 6) + T[(unsigned char)c];
-        bits += 6;
-        if (bits >= 0) {
-            out.push_back((uint8_t)(val >> bits));
-            bits -= 8;
-        }
-    }
-    return out;
-}
 
 std::string sha256hex(const std::string& input) {
     uint8_t hash[crypto_hash_sha256_BYTES];
@@ -121,11 +87,11 @@ std::string dpapiEncrypt(const std::string& plaintext) {
     blob.reserve(sizeof(nonce) + ct.size());
     blob.insert(blob.end(), nonce, nonce + sizeof(nonce));
     blob.insert(blob.end(), ct.begin(), ct.end());
-    return base64Encode(blob);
+    return satellite::base64Encode(blob);
 }
 
 std::string dpapiDecrypt(const std::string& encoded) {
-    auto blob = base64Decode(encoded);
+    auto blob = satellite::base64Decode(encoded);
     if (blob.size() < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) return "";
 
     uint8_t key[LOCAL_KEY_LEN];
@@ -141,5 +107,5 @@ std::string dpapiDecrypt(const std::string& encoded) {
         return "";
     }
     sodium_memzero(key, sizeof(key));
-    return std::string(reinterpret_cast<char*>(pt.data()), pt.size());
+    return {reinterpret_cast<char*>(pt.data()), pt.size()};
 }

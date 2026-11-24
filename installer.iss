@@ -82,7 +82,7 @@
 ;                                uiAccess="true" (CMake SATELLITE_UIACCESS=ON),
 ;                                so Setup accepts only a destination under
 ;                                Program Files and relocates an install found
-;                                elsewhere (docs/packaging.md)
+;                                elsewhere (docs/PACKAGING.md)
 ; ============================================================================
 
 #define MyAppName "Satellite"
@@ -106,7 +106,7 @@
 
 ; --- Bundled HIDMaestro helper (see redist/README.md; built by
 ;     `dotnet publish helper/hidmaestro` from the pinned SDK release) ---
-#define HmVersion "2.1.0"
+#define HmVersion "2.3.0"
 #define HmHelperExe "satellite-hm-helper.exe"
 #define HmHelperDir "helper\hidmaestro\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish"
 #define HmHelperSource HmHelperDir + "\" + HmHelperExe

@@ -83,7 +83,7 @@ void registerIcon(HWND hwnd) {
         shellNotify(NIM_DELETE, &del);
         if (!shellNotify(NIM_ADD, &g_nid)) {
             g_guidActive = false;
-            g_nid.uFlags &= ~NIF_GUID;
+            g_nid.uFlags &= ~static_cast<UINT>(NIF_GUID);
             g_nid.uID = 1;
             shellNotify(NIM_ADD, &g_nid);
         }

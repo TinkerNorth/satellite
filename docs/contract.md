@@ -1145,6 +1145,24 @@ hostFeatures; the server drops streams for ungranted features.
 | `GET /api/diagnostics` | The `dish-diagnostics.v1` file the Debug page saves (see below) |
 | `GET /api/controller-db/status` | Bundled and active controller database versions, source, the switch, and the last check's time and result |
 | `POST /api/controller-db/check` | "Check now": wakes the check (nothing is sent while `controllerDbUpdates` is off) and answers with the status at once |
+| `GET /api/version` | `{version, platformId}` |
+| `GET /api/updates/status` | The updater's full `UpdateStatusSnapshot` |
+| `POST /api/updates/check` | Check for a new release now |
+| `POST /api/updates/download` | Fetch the artifact |
+| `POST /api/updates/install` | Apply the downloaded artifact (restarts Satellite) |
+| `POST /api/updates/repair` | Fetch and re-run the current version's installer (Windows: the drivers) |
+| `POST /api/updates/retry` | Retry the step that failed: check, download or install |
+| `POST /api/updates/cancel` | Cancel a download in flight |
+| `POST /api/updates/dismiss` | "Remind me later" / "Install later": hides the banner until the next check |
+| `POST /api/updates/skip` | `{version}`: never offer this version again |
+| `POST /api/updates/preferences` | `{channel, autoCheck, autoDownload, autoInstall}` |
+
+Every `POST /api/updates/*` answers with the snapshot as it stands right after
+the request, so an accepted action already shows its new state (`checking`,
+`downloading`, `installing`) and a refused one shows why. The `/api/events`
+stream carries an `update` event with the same snapshot on every tick, so the
+dashboard does not poll. The updater itself is described in
+[ARCHITECTURE.md](ARCHITECTURE.md), "Updater".
 
 ### `POST /api/connections/{connectionId}/controllers/{ctrlIdx}/test`
 

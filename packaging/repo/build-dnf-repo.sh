@@ -17,7 +17,8 @@
 # Usage:
 #   build-dnf-repo.sh <pages-dir> <release-staging-dir>
 #
-# Requires: createrepo_c, gpg (with $GPG_KEY_ID imported), $REPO_BASE_URL.
+# Requires: createrepo_c, rpmsign (Debian/Ubuntu: rpm; Fedora: rpm-sign), gpg
+# (with $GPG_KEY_ID imported), $REPO_BASE_URL.
 set -euo pipefail
 
 PAGES_DIR="${1:-}"
@@ -30,6 +31,10 @@ if [ -z "$PAGES_DIR" ] || [ -z "$STAGING_DIR" ]; then
 fi
 if [ -z "${GPG_KEY_ID:-}" ] || [ -z "${REPO_BASE_URL:-}" ]; then
     echo "GPG_KEY_ID and REPO_BASE_URL must be set." >&2
+    exit 2
+fi
+if ! command -v rpmsign >/dev/null 2>&1; then
+    echo "rpmsign not found; install it (apt: rpm, dnf: rpm-sign)." >&2
     exit 2
 fi
 if ! command -v createrepo_c >/dev/null 2>&1; then
@@ -52,8 +57,24 @@ else
     done
 fi
 
+# ── 2. Sign every package the repository holds ──────────────────────────────
+# The .repo file sets gpgcheck=1, so dnf refuses an unsigned package: 2.3.0's
+# repository listed one, and `dnf install satellite` failed with "The
+# package is not signed". The release's own .rpm stays unsigned (its
+# integrity is SHA256SUMS and cosign); the repository's copy carries the
+# repository key's signature. A package already signed is left as it is.
+for rpm in "$repo_dir"/*.rpm; do
+    if rpm -qp --qf '%{SIGPGP:pgpsig}%{RSAHEADER:pgpsig}' "$rpm" 2>/dev/null | grep -q 'Key ID'; then
+        continue
+    fi
+    echo "+ signing $(basename "$rpm")"
+    rpmsign --addsign --define "_gpg_name ${GPG_KEY_ID}" "$rpm"
+done
+
 # Regenerate metadata from scratch (cheap at our scale).
-createrepo_c --update --no-database "$repo_dir"
+# gzip, which the check below reads and every dnf accepts; newer createrepo_c
+# defaults to zstd.
+createrepo_c --update --no-database --general-compress-type=gz "$repo_dir"
 for rpm in "${rpms[@]}"; do
     version="$(basename "$rpm")"
     version="${version#satellite-}"

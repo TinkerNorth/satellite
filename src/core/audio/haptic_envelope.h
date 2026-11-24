@@ -55,14 +55,15 @@ inline uint16_t hapticLaneMagnitude(const int16_t* pcm, size_t frames, int chann
     }
     double sumSquares = 0.0;
     for (size_t f = 0; f < frames; f++) {
-        const double s = static_cast<double>(
+        const auto s = static_cast<double>(
             pcm[f * static_cast<size_t>(channels) + static_cast<size_t>(channel)]);
         sumSquares += s * s;
     }
     const double rms = std::sqrt(sumSquares / static_cast<double>(frames));
     // Full-scale sine (peak 32767, RMS 23170) maps to 65535.
     const double scaled = rms * std::sqrt(2.0) * (65535.0 / 32767.0);
-    const uint16_t magnitude = scaled >= 65535.0 ? UINT16_MAX : static_cast<uint16_t>(scaled + 0.5);
+    const uint16_t magnitude =
+        scaled >= 65535.0 ? UINT16_MAX : static_cast<uint16_t>(std::lround(scaled));
     return magnitude < HAPTIC_RUMBLE_FLOOR ? 0 : magnitude;
 }
 

@@ -32,23 +32,7 @@
 #include <string>
 #include <thread>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 // Kernel ABI values, absent from headers older than the grip keys (Ubuntu
 // 24.04 ships 6.8's).
@@ -117,7 +101,7 @@ bool waitForKeyEvent(int fd, uint16_t code, int32_t value, int deadlineMs) {
 }
 
 bool hasKey(const unsigned long* keys, int code) {
-    const size_t index = static_cast<size_t>(code);
+    const auto index = static_cast<size_t>(code);
     return ((keys[index / kBitsPerLong] >> (index % kBitsPerLong)) & 1UL) != 0;
 }
 
@@ -189,239 +173,242 @@ bool waitFor(const std::atomic<bool>& flag, int deadlineMs) {
 } // namespace
 
 int main() {
-    std::cout << "Running uinput smoke test...\n\n";
+    return satellite::test::runMain("test_uinput_smoke", []() -> int {
+        std::cout << "Running uinput smoke test...\n\n";
 
-    const BackendStatus status = probeBackend();
-    if (!status.available) {
-        std::cout << "SKIP: /dev/uinput unavailable ("
-                  << (status.errorCode != nullptr ? status.errorCode : "unknown")
-                  << ") — modprobe uinput and grant write access to run this test.\n";
-        return kSkipExitCode;
-    }
-
-    // Keep the battery/lightbar file mirror out of a running daemon's tree.
-    char proxyTemplate[] = "/tmp/satellite-smoke-XXXXXX";
-    char* proxyDir = ::mkdtemp(proxyTemplate);
-    if (proxyDir != nullptr) ::setenv("SATELLITE_SYSFS_PROXY_DIR", proxyDir, 1);
-
-    GamepadAdapter adapter;
-    constexpr uint32_t kEdgeSerial = MAX_BACKEND_CONTROLLERS - 3;
-    constexpr uint32_t kSwitchSerial = MAX_BACKEND_CONTROLLERS - 2;
-    constexpr uint32_t kXboxSerial = MAX_BACKEND_CONTROLLERS - 1;
-    constexpr uint32_t kDs4Serial = MAX_BACKEND_CONTROLLERS;
-
-    TEST("bus opens");
-    EXPECT(adapter.ensureBusOpen());
-    EXPECT(adapter.isBusOpen());
-
-    TEST("Xbox 360 pad plugs in");
-    EXPECT(adapter.pluginDevice(kXboxSerial, GamepadIdentity::Xbox));
-    EXPECT(adapter.isDevicePlugged(kXboxSerial));
-
-    const std::string xboxName = "Satellite Virtual Xbox 360 Pad #" + std::to_string(kXboxSerial);
-    const std::string xboxNode = findEventNodeByName(xboxName, 3000);
-    TEST("Xbox pad appears as an evdev node");
-    EXPECT(!xboxNode.empty());
-    if (xboxNode.empty()) {
-        std::cout << "SKIP: virtual pad created but its evdev node never appeared.\n";
-        return kSkipExitCode;
-    }
-
-    const int evFd = ::open(xboxNode.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
-    if (evFd < 0) {
-        std::cout << "SKIP: cannot open " << xboxNode
-                  << " (need root or input-group membership) — errno " << errno << "\n";
-        return kSkipExitCode;
-    }
-
-    TEST("gamepad report reaches a consumer as EV_KEY");
-    GamepadReport report;
-    report.wButtons = kXusbA;
-    EXPECT(adapter.submitReport(kXboxSerial, report));
-    EXPECT(waitForKeyEvent(evFd, BTN_A, 1, 2000));
-    report.wButtons = 0;
-    EXPECT(adapter.submitReport(kXboxSerial, report));
-    EXPECT(waitForKeyEvent(evFd, BTN_A, 0, 2000));
-
-    TEST("force-feedback upload round-trips into the rumble callback");
-    std::atomic<bool> rumblePlayed{false};
-    std::atomic<bool> rumbleStopped{false};
-    std::atomic<uint16_t> rumbleStrong{0};
-    std::atomic<uint16_t> rumbleWeak{0};
-    adapter.setRumbleCallback([&](uint32_t serial, const RumbleReport& r) {
-        if (serial != kXboxSerial) return;
-        if (r.strongMagnitude > 0 || r.weakMagnitude > 0) {
-            rumbleStrong.store(r.strongMagnitude, std::memory_order_release);
-            rumbleWeak.store(r.weakMagnitude, std::memory_order_release);
-            rumblePlayed.store(true, std::memory_order_release);
-        } else {
-            rumbleStopped.store(true, std::memory_order_release);
+        const BackendStatus status = probeBackend();
+        if (!status.available) {
+            std::cout << "SKIP: /dev/uinput unavailable ("
+                      << (status.errorCode != nullptr ? status.errorCode : "unknown")
+                      << ") — modprobe uinput and grant write access to run this test.\n";
+            return kSkipExitCode;
         }
+
+        // Keep the battery/lightbar file mirror out of a running daemon's tree.
+        char proxyTemplate[] = "/tmp/satellite-smoke-XXXXXX";
+        char* proxyDir = ::mkdtemp(proxyTemplate);
+        if (proxyDir != nullptr) ::setenv("SATELLITE_SYSFS_PROXY_DIR", proxyDir, 1);
+
+        GamepadAdapter adapter;
+        constexpr uint32_t kEdgeSerial = MAX_BACKEND_CONTROLLERS - 3;
+        constexpr uint32_t kSwitchSerial = MAX_BACKEND_CONTROLLERS - 2;
+        constexpr uint32_t kXboxSerial = MAX_BACKEND_CONTROLLERS - 1;
+        constexpr uint32_t kDs4Serial = MAX_BACKEND_CONTROLLERS;
+
+        TEST("bus opens");
+        EXPECT(adapter.ensureBusOpen());
+        EXPECT(adapter.isBusOpen());
+
+        TEST("Xbox 360 pad plugs in");
+        EXPECT(adapter.pluginDevice(kXboxSerial, GamepadIdentity::Xbox));
+        EXPECT(adapter.isDevicePlugged(kXboxSerial));
+
+        const std::string xboxName =
+            "Satellite Virtual Xbox 360 Pad #" + std::to_string(kXboxSerial);
+        const std::string xboxNode = findEventNodeByName(xboxName, 3000);
+        TEST("Xbox pad appears as an evdev node");
+        EXPECT(!xboxNode.empty());
+        if (xboxNode.empty()) {
+            std::cout << "SKIP: virtual pad created but its evdev node never appeared.\n";
+            return kSkipExitCode;
+        }
+
+        const int evFd = ::open(xboxNode.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (evFd < 0) {
+            std::cout << "SKIP: cannot open " << xboxNode
+                      << " (need root or input-group membership) — errno " << errno << "\n";
+            return kSkipExitCode;
+        }
+
+        TEST("gamepad report reaches a consumer as EV_KEY");
+        GamepadReport report;
+        report.wButtons = kXusbA;
+        EXPECT(adapter.submitReport(kXboxSerial, report));
+        EXPECT(waitForKeyEvent(evFd, BTN_A, 1, 2000));
+        report.wButtons = 0;
+        EXPECT(adapter.submitReport(kXboxSerial, report));
+        EXPECT(waitForKeyEvent(evFd, BTN_A, 0, 2000));
+
+        TEST("force-feedback upload round-trips into the rumble callback");
+        std::atomic<bool> rumblePlayed{false};
+        std::atomic<bool> rumbleStopped{false};
+        std::atomic<uint16_t> rumbleStrong{0};
+        std::atomic<uint16_t> rumbleWeak{0};
+        adapter.setRumbleCallback([&](uint32_t serial, const RumbleReport& r) {
+            if (serial != kXboxSerial) return;
+            if (r.strongMagnitude > 0 || r.weakMagnitude > 0) {
+                rumbleStrong.store(r.strongMagnitude, std::memory_order_release);
+                rumbleWeak.store(r.weakMagnitude, std::memory_order_release);
+                rumblePlayed.store(true, std::memory_order_release);
+            } else {
+                rumbleStopped.store(true, std::memory_order_release);
+            }
+        });
+        struct ff_effect effect{};
+        effect.type = FF_RUMBLE;
+        effect.id = -1;
+        effect.u.rumble.strong_magnitude = 0x1234;
+        effect.u.rumble.weak_magnitude = 0x5678;
+        effect.replay.length = 1000;
+        EXPECT(::ioctl(evFd, EVIOCSFF, &effect) >= 0);
+        struct input_event play{};
+        play.type = EV_FF;
+        play.code = static_cast<uint16_t>(effect.id);
+        play.value = 1;
+        EXPECT(::write(evFd, &play, sizeof(play)) == static_cast<ssize_t>(sizeof(play)));
+        EXPECT(waitFor(rumblePlayed, 2000));
+        EXPECT(rumbleStrong.load(std::memory_order_acquire) == 0x1234);
+        EXPECT(rumbleWeak.load(std::memory_order_acquire) == 0x5678);
+        play.value = 0;
+        EXPECT(::write(evFd, &play, sizeof(play)) == static_cast<ssize_t>(sizeof(play)));
+        EXPECT(waitFor(rumbleStopped, 2000));
+        ::close(evFd);
+
+        TEST("DS4 pad plugs in with motion + touchpad nodes");
+        EXPECT(adapter.pluginDevice(kDs4Serial, GamepadIdentity::DS4));
+        EXPECT(adapter.isDevicePlugged(kDs4Serial));
+        const std::string ds4Name = "Satellite Virtual DualShock 4 #" + std::to_string(kDs4Serial);
+        EXPECT(!findEventNodeByName(ds4Name, 3000).empty());
+        EXPECT(!findEventNodeByName("Satellite Virtual DualShock 4 Motion Sensors #" +
+                                        std::to_string(kDs4Serial),
+                                    3000)
+                    .empty());
+        EXPECT(!findEventNodeByName(
+                    "Satellite Virtual DualShock 4 Touchpad #" + std::to_string(kDs4Serial), 3000)
+                    .empty());
+        EXPECT(adapter.motionBackendOk(kDs4Serial));
+
+        TEST("DS4 report / motion / touchpad submissions are accepted");
+        GamepadReport ds4Report;
+        ds4Report.wButtons = kXusbA;
+        EXPECT(adapter.submitReport(kDs4Serial, ds4Report));
+        MotionReport motion;
+        motion.gyroX = 100;
+        motion.accelZ = 8192;
+        motion.timestampDeltaUs = 4000;
+        EXPECT(adapter.submitMotion(kDs4Serial, motion));
+        TouchpadReport touch;
+        touch.finger0.active = true;
+        touch.finger0.trackingId = 1;
+        touch.finger0.x = 1024;
+        touch.finger0.y = -2048;
+        touch.eventTimeMs = 1;
+        EXPECT(adapter.submitTouchpad(kDs4Serial, touch));
+
+        TEST("Switch Pro: misc1 presses Capture (BTN_Y, SDL's js4), and lets go of it");
+        EXPECT(adapter.pluginDevice(kSwitchSerial, GamepadIdentity::SwitchPro));
+        const std::string switchNode = findEventNodeByName(
+            "Satellite Virtual Switch Pro Controller #" + std::to_string(kSwitchSerial), 3000);
+        EXPECT(!switchNode.empty());
+        const int switchFd =
+            switchNode.empty() ? -1 : ::open(switchNode.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        EXPECT(switchFd >= 0);
+        InputReport capture;
+        capture.extButtons = EXT_BUTTON_MISC1;
+        EXPECT(adapter.submitInput(kSwitchSerial, capture));
+        EXPECT(waitForKeyEvent(switchFd, BTN_Y, 1, 2000));
+        EXPECT(adapter.submitInput(kSwitchSerial, InputReport{}));
+        EXPECT(waitForKeyEvent(switchFd, BTN_Y, 0, 2000));
+        if (switchFd >= 0) ::close(switchFd);
+        EXPECT(adapter.unplugDevice(kSwitchSerial));
+
+        TEST("DualSense Edge: a 054c:0df2 node with motion and touch nodes and the four grip keys");
+        EXPECT(adapter.pluginDevice(kEdgeSerial, GamepadIdentity::DualSenseEdge));
+        const std::string edgeNode = findEventNodeByName(
+            "Satellite Virtual DualSense Edge #" + std::to_string(kEdgeSerial), 3000);
+        EXPECT(!edgeNode.empty());
+        EXPECT(!findEventNodeByName("Satellite Virtual DualShock 4 Motion Sensors #" +
+                                        std::to_string(kEdgeSerial),
+                                    3000)
+                    .empty());
+        EXPECT(!findEventNodeByName(
+                    "Satellite Virtual DualShock 4 Touchpad #" + std::to_string(kEdgeSerial), 3000)
+                    .empty());
+        const int edgeFd =
+            edgeNode.empty() ? -1 : ::open(edgeNode.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        EXPECT(edgeFd >= 0);
+        struct input_id edgeId{};
+        EXPECT(edgeFd >= 0 && ::ioctl(edgeFd, EVIOCGID, &edgeId) == 0);
+        EXPECT(edgeId.vendor == 0x054c && edgeId.product == 0x0df2);
+        unsigned long edgeKeys[KEY_MAX / kBitsPerLong + 1] = {};
+        EXPECT(edgeFd >= 0 && ::ioctl(edgeFd, EVIOCGBIT(EV_KEY, sizeof(edgeKeys)), edgeKeys) >= 0);
+        for (int code : {BTN_GRIPL, BTN_GRIPR, BTN_GRIPL2, BTN_GRIPR2}) {
+            EXPECT(hasKey(edgeKeys, code));
+        }
+
+        TEST("DualSense Edge: each back button presses its grip key, and lets go of it");
+        const struct {
+            uint32_t extButton;
+            uint16_t code;
+        } paddles[] = {
+            {EXT_BUTTON_RIGHT_PADDLE1, BTN_GRIPR},
+            {EXT_BUTTON_LEFT_PADDLE1, BTN_GRIPL},
+            {EXT_BUTTON_RIGHT_PADDLE2, BTN_GRIPR2},
+            {EXT_BUTTON_LEFT_PADDLE2, BTN_GRIPL2},
+        };
+        for (const auto& paddle : paddles) {
+            InputReport held;
+            held.extButtons = paddle.extButton;
+            EXPECT(adapter.submitInput(kEdgeSerial, held));
+            EXPECT(waitForKeyEvent(edgeFd, paddle.code, 1, 2000));
+            EXPECT(adapter.submitInput(kEdgeSerial, InputReport{}));
+            EXPECT(waitForKeyEvent(edgeFd, paddle.code, 0, 2000));
+        }
+        if (edgeFd >= 0) ::close(edgeFd);
+        EXPECT(adapter.unplugDevice(kEdgeSerial));
+
+        TEST("Xbox, DualShock 4 and DualSense nodes have no grip keys, and drop every extended "
+             "button, reserved bits included");
+        constexpr uint32_t kDropSerial = MAX_BACKEND_CONTROLLERS - 4;
+        const struct {
+            GamepadIdentity identity;
+            const char* name;
+        } noRoom[] = {
+            {GamepadIdentity::Xbox, "Satellite Virtual Xbox 360 Pad"},
+            {GamepadIdentity::DS4, "Satellite Virtual DualShock 4"},
+            {GamepadIdentity::DualSense, "Satellite Virtual DualSense"},
+        };
+        for (const auto& pad : noRoom) {
+            const DropProbe probe =
+                probeDrop(adapter, kDropSerial, pad.identity, pad.name, kEveryExtBit);
+            EXPECT(probe.dropped());
+            EXPECT(!probe.gripKeys);
+        }
+
+        TEST("Switch Pro: no grip keys, and every extended button but misc1, reserved bits "
+             "included, "
+             "presses nothing");
+        const DropProbe sw =
+            probeDrop(adapter, kDropSerial, GamepadIdentity::SwitchPro,
+                      "Satellite Virtual Switch Pro Controller", kEveryExtBit & ~EXT_BUTTON_MISC1);
+        EXPECT(sw.dropped());
+        EXPECT(!sw.gripKeys);
+
+        TEST("DualSense Edge: every extended button but the paddles, reserved bits included, "
+             "presses "
+             "nothing");
+        const uint32_t edgePaddles = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE1 |
+                                     EXT_BUTTON_RIGHT_PADDLE2 | EXT_BUTTON_LEFT_PADDLE2;
+        const DropProbe edge =
+            probeDrop(adapter, kDropSerial, GamepadIdentity::DualSenseEdge,
+                      "Satellite Virtual DualSense Edge", kEveryExtBit & ~edgePaddles);
+        EXPECT(edge.dropped());
+
+        TEST("relative-mouse node materialises on first use");
+        EXPECT(adapter.submitRelativeMouse(3, -2, MouseButtons{}, 0));
+        EXPECT(!findEventNodeByName("Satellite Virtual Pointer", 3000).empty());
+
+        TEST("unplug removes devices and their nodes");
+        EXPECT(adapter.unplugDevice(kXboxSerial));
+        EXPECT(!adapter.isDevicePlugged(kXboxSerial));
+        EXPECT(adapter.unplugDevice(kDs4Serial));
+        EXPECT(!adapter.isDevicePlugged(kDs4Serial));
+        EXPECT(eventNodeGone(xboxName, 3000));
+        EXPECT(eventNodeGone(ds4Name, 3000));
+
+        adapter.closeBus();
+        TEST("bus closes");
+        EXPECT(!adapter.isBusOpen());
+        return 0;
     });
-    struct ff_effect effect{};
-    effect.type = FF_RUMBLE;
-    effect.id = -1;
-    effect.u.rumble.strong_magnitude = 0x1234;
-    effect.u.rumble.weak_magnitude = 0x5678;
-    effect.replay.length = 1000;
-    EXPECT(::ioctl(evFd, EVIOCSFF, &effect) >= 0);
-    struct input_event play{};
-    play.type = EV_FF;
-    play.code = static_cast<uint16_t>(effect.id);
-    play.value = 1;
-    EXPECT(::write(evFd, &play, sizeof(play)) == static_cast<ssize_t>(sizeof(play)));
-    EXPECT(waitFor(rumblePlayed, 2000));
-    EXPECT(rumbleStrong.load(std::memory_order_acquire) == 0x1234);
-    EXPECT(rumbleWeak.load(std::memory_order_acquire) == 0x5678);
-    play.value = 0;
-    EXPECT(::write(evFd, &play, sizeof(play)) == static_cast<ssize_t>(sizeof(play)));
-    EXPECT(waitFor(rumbleStopped, 2000));
-    ::close(evFd);
-
-    TEST("DS4 pad plugs in with motion + touchpad nodes");
-    EXPECT(adapter.pluginDevice(kDs4Serial, GamepadIdentity::DS4));
-    EXPECT(adapter.isDevicePlugged(kDs4Serial));
-    const std::string ds4Name = "Satellite Virtual DualShock 4 #" + std::to_string(kDs4Serial);
-    EXPECT(!findEventNodeByName(ds4Name, 3000).empty());
-    EXPECT(!findEventNodeByName(
-                "Satellite Virtual DualShock 4 Motion Sensors #" + std::to_string(kDs4Serial), 3000)
-                .empty());
-    EXPECT(!findEventNodeByName(
-                "Satellite Virtual DualShock 4 Touchpad #" + std::to_string(kDs4Serial), 3000)
-                .empty());
-    EXPECT(adapter.motionBackendOk(kDs4Serial));
-
-    TEST("DS4 report / motion / touchpad submissions are accepted");
-    GamepadReport ds4Report;
-    ds4Report.wButtons = kXusbA;
-    EXPECT(adapter.submitReport(kDs4Serial, ds4Report));
-    MotionReport motion;
-    motion.gyroX = 100;
-    motion.accelZ = 8192;
-    motion.timestampDeltaUs = 4000;
-    EXPECT(adapter.submitMotion(kDs4Serial, motion));
-    TouchpadReport touch;
-    touch.finger0.active = true;
-    touch.finger0.trackingId = 1;
-    touch.finger0.x = 1024;
-    touch.finger0.y = -2048;
-    touch.eventTimeMs = 1;
-    EXPECT(adapter.submitTouchpad(kDs4Serial, touch));
-
-    TEST("Switch Pro: misc1 presses Capture (BTN_Y, SDL's js4), and lets go of it");
-    EXPECT(adapter.pluginDevice(kSwitchSerial, GamepadIdentity::SwitchPro));
-    const std::string switchNode = findEventNodeByName(
-        "Satellite Virtual Switch Pro Controller #" + std::to_string(kSwitchSerial), 3000);
-    EXPECT(!switchNode.empty());
-    const int switchFd =
-        switchNode.empty() ? -1 : ::open(switchNode.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    EXPECT(switchFd >= 0);
-    InputReport capture;
-    capture.extButtons = EXT_BUTTON_MISC1;
-    EXPECT(adapter.submitInput(kSwitchSerial, capture));
-    EXPECT(waitForKeyEvent(switchFd, BTN_Y, 1, 2000));
-    EXPECT(adapter.submitInput(kSwitchSerial, InputReport{}));
-    EXPECT(waitForKeyEvent(switchFd, BTN_Y, 0, 2000));
-    if (switchFd >= 0) ::close(switchFd);
-    EXPECT(adapter.unplugDevice(kSwitchSerial));
-
-    TEST("DualSense Edge: a 054c:0df2 node with motion and touch nodes and the four grip keys");
-    EXPECT(adapter.pluginDevice(kEdgeSerial, GamepadIdentity::DualSenseEdge));
-    const std::string edgeNode = findEventNodeByName(
-        "Satellite Virtual DualSense Edge #" + std::to_string(kEdgeSerial), 3000);
-    EXPECT(!edgeNode.empty());
-    EXPECT(!findEventNodeByName("Satellite Virtual DualShock 4 Motion Sensors #" +
-                                    std::to_string(kEdgeSerial),
-                                3000)
-                .empty());
-    EXPECT(!findEventNodeByName(
-                "Satellite Virtual DualShock 4 Touchpad #" + std::to_string(kEdgeSerial), 3000)
-                .empty());
-    const int edgeFd =
-        edgeNode.empty() ? -1 : ::open(edgeNode.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    EXPECT(edgeFd >= 0);
-    struct input_id edgeId{};
-    EXPECT(edgeFd >= 0 && ::ioctl(edgeFd, EVIOCGID, &edgeId) == 0);
-    EXPECT(edgeId.vendor == 0x054c && edgeId.product == 0x0df2);
-    unsigned long edgeKeys[KEY_MAX / kBitsPerLong + 1] = {};
-    EXPECT(edgeFd >= 0 && ::ioctl(edgeFd, EVIOCGBIT(EV_KEY, sizeof(edgeKeys)), edgeKeys) >= 0);
-    for (int code : {BTN_GRIPL, BTN_GRIPR, BTN_GRIPL2, BTN_GRIPR2}) EXPECT(hasKey(edgeKeys, code));
-
-    TEST("DualSense Edge: each back button presses its grip key, and lets go of it");
-    const struct {
-        uint32_t extButton;
-        uint16_t code;
-    } paddles[] = {
-        {EXT_BUTTON_RIGHT_PADDLE1, BTN_GRIPR},
-        {EXT_BUTTON_LEFT_PADDLE1, BTN_GRIPL},
-        {EXT_BUTTON_RIGHT_PADDLE2, BTN_GRIPR2},
-        {EXT_BUTTON_LEFT_PADDLE2, BTN_GRIPL2},
-    };
-    for (const auto& paddle : paddles) {
-        InputReport held;
-        held.extButtons = paddle.extButton;
-        EXPECT(adapter.submitInput(kEdgeSerial, held));
-        EXPECT(waitForKeyEvent(edgeFd, paddle.code, 1, 2000));
-        EXPECT(adapter.submitInput(kEdgeSerial, InputReport{}));
-        EXPECT(waitForKeyEvent(edgeFd, paddle.code, 0, 2000));
-    }
-    if (edgeFd >= 0) ::close(edgeFd);
-    EXPECT(adapter.unplugDevice(kEdgeSerial));
-
-    TEST("Xbox, DualShock 4 and DualSense nodes have no grip keys, and drop every extended "
-         "button, reserved bits included");
-    constexpr uint32_t kDropSerial = MAX_BACKEND_CONTROLLERS - 4;
-    const struct {
-        GamepadIdentity identity;
-        const char* name;
-    } noRoom[] = {
-        {GamepadIdentity::Xbox, "Satellite Virtual Xbox 360 Pad"},
-        {GamepadIdentity::DS4, "Satellite Virtual DualShock 4"},
-        {GamepadIdentity::DualSense, "Satellite Virtual DualSense"},
-    };
-    for (const auto& pad : noRoom) {
-        const DropProbe probe =
-            probeDrop(adapter, kDropSerial, pad.identity, pad.name, kEveryExtBit);
-        EXPECT(probe.dropped());
-        EXPECT(!probe.gripKeys);
-    }
-
-    TEST("Switch Pro: no grip keys, and every extended button but misc1, reserved bits included, "
-         "presses nothing");
-    const DropProbe sw =
-        probeDrop(adapter, kDropSerial, GamepadIdentity::SwitchPro,
-                  "Satellite Virtual Switch Pro Controller", kEveryExtBit & ~EXT_BUTTON_MISC1);
-    EXPECT(sw.dropped());
-    EXPECT(!sw.gripKeys);
-
-    TEST("DualSense Edge: every extended button but the paddles, reserved bits included, presses "
-         "nothing");
-    const uint32_t edgePaddles = EXT_BUTTON_RIGHT_PADDLE1 | EXT_BUTTON_LEFT_PADDLE1 |
-                                 EXT_BUTTON_RIGHT_PADDLE2 | EXT_BUTTON_LEFT_PADDLE2;
-    const DropProbe edge =
-        probeDrop(adapter, kDropSerial, GamepadIdentity::DualSenseEdge,
-                  "Satellite Virtual DualSense Edge", kEveryExtBit & ~edgePaddles);
-    EXPECT(edge.dropped());
-
-    TEST("relative-mouse node materialises on first use");
-    EXPECT(adapter.submitRelativeMouse(3, -2, MouseButtons{}, 0));
-    EXPECT(!findEventNodeByName("Satellite Virtual Pointer", 3000).empty());
-
-    TEST("unplug removes devices and their nodes");
-    EXPECT(adapter.unplugDevice(kXboxSerial));
-    EXPECT(!adapter.isDevicePlugged(kXboxSerial));
-    EXPECT(adapter.unplugDevice(kDs4Serial));
-    EXPECT(!adapter.isDevicePlugged(kDs4Serial));
-    EXPECT(eventNodeGone(xboxName, 3000));
-    EXPECT(eventNodeGone(ds4Name, 3000));
-
-    adapter.closeBus();
-    TEST("bus closes");
-    EXPECT(!adapter.isBusOpen());
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
 }

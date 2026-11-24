@@ -42,9 +42,7 @@ bool statusIsOk(NSURLResponse* resp, std::string& err) {
     if (![resp isKindOfClass:[NSHTTPURLResponse class]]) return true;
     const NSInteger status = ((NSHTTPURLResponse*)resp).statusCode;
     if (status >= 200 && status < 300) return true;
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "HTTP %ld", (long)status);
-    err = buf;
+    err = "HTTP " + std::to_string(static_cast<long>(status));
     return false;
 }
 
@@ -52,7 +50,7 @@ bool statusIsOk(NSURLResponse* resp, std::string& err) {
 bool httpGetToString(const std::string& url, std::string& out, std::string& err) {
     @autoreleasepool {
         NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
-        if (!nsurl) {
+        if (nsurl == nil) {
             err = "Invalid URL";
             return false;
         }
@@ -74,7 +72,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
         [task resume];
         dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 
-        if (nserr) {
+        if (nserr != nil) {
             err = std::string("Network error: ") + nserr.localizedDescription.UTF8String;
             return false;
         }
@@ -93,7 +91,7 @@ DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& i
     DbFetchResponse r;
     @autoreleasepool {
         NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
-        if (!nsurl) return r;
+        if (nsurl == nil) return r;
         NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:nsurl];
         req.timeoutInterval = 30.0;
         req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
@@ -123,8 +121,8 @@ DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& i
         [session finishTasksAndInvalidate];
 
         const bool http = [resp isKindOfClass:[NSHTTPURLResponse class]];
-        if (nserr || !http) return r;
-        NSHTTPURLResponse* httpResp = (NSHTTPURLResponse*)resp;
+        if (nserr != nil || !http) return r;
+        auto* httpResp = (NSHTTPURLResponse*)resp;
         if (httpResp.statusCode == 304) {
             r.outcome = DbFetch::NotModified;
             return r;
@@ -132,7 +130,7 @@ DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& i
         if (httpResp.statusCode != 200) return r;
         r.body.assign((const char*)body.bytes, body.length);
         NSString* etag = [httpResp valueForHTTPHeaderField:@"ETag"];
-        if (etag) r.etag = etag.UTF8String;
+        if (etag != nil) r.etag = etag.UTF8String;
         r.outcome = DbFetch::Ok;
     }
     return r;
@@ -148,7 +146,7 @@ class ProgressDelegate {
     void onProgress(uint64_t soFar, uint64_t total) const {
         if (cb_) cb_(soFar, total);
     }
-    bool isCancelled() const { return cancel_ && cancel_->load(); }
+    bool isCancelled() const { return cancel_ != nullptr && cancel_->load(); }
 
   private:
     std::function<void(uint64_t, uint64_t)> cb_;
@@ -173,7 +171,7 @@ class ProgressDelegate {
                  didWriteData:(int64_t)bytesWritten
             totalBytesWritten:(int64_t)totalBytesWritten
     totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
-    if (self.impl) {
+    if (self.impl != nullptr) {
         self.impl->onProgress(
             (uint64_t)totalBytesWritten,
             (uint64_t)(totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0));
@@ -190,7 +188,8 @@ class ProgressDelegate {
                                                  toURL:self.destination
                                                  error:&err]) {
         self.ok = NO;
-        self.errorString = err.localizedDescription ?: @"move failed";
+        self.errorString =
+            err.localizedDescription != nil ? err.localizedDescription : @"move failed";
     } else {
         NSHTTPURLResponse* http = (NSHTTPURLResponse*)task.response;
         if (http.statusCode < 200 || http.statusCode >= 300) {
@@ -205,16 +204,16 @@ class ProgressDelegate {
 - (void)URLSession:(NSURLSession*)session
                     task:(NSURLSessionTask*)task
     didCompleteWithError:(NSError*)error {
-    if (error) {
+    if (error != nil) {
         if (error.code == NSURLErrorCancelled) {
             self.ok = NO;
             self.errorString = @"cancelled";
-        } else if (!self.errorString) {
+        } else if (self.errorString == nil) {
             self.ok = NO;
             self.errorString = error.localizedDescription;
         }
     }
-    if (self.doneSem) dispatch_semaphore_signal(self.doneSem);
+    if (self.doneSem != nil) dispatch_semaphore_signal(self.doneSem);
 }
 @end
 
@@ -225,7 +224,7 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
                    const std::atomic<bool>* cancel, std::string& err) {
     @autoreleasepool {
         NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
-        if (!nsurl) {
+        if (nsurl == nil) {
             err = "Invalid URL";
             return false;
         }
@@ -253,7 +252,7 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
         [session finishTasksAndInvalidate];
 
         if (!delegate.ok) {
-            err = delegate.errorString ? delegate.errorString.UTF8String : "download failed";
+            err = delegate.errorString != nil ? delegate.errorString.UTF8String : "download failed";
             return false;
         }
         return true;
@@ -284,18 +283,24 @@ std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetN
 
 bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err) {
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) {
+    if (f == nullptr) {
         err = "Cannot open downloaded file for hashing";
         return false;
     }
     CC_SHA256_CTX ctx;
     CC_SHA256_Init(&ctx);
     unsigned char buf[64 * 1024];
-    size_t n;
+    size_t n = 0;
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
         CC_SHA256_Update(&ctx, buf, (CC_LONG)n);
     }
-    std::fclose(f);
+    // fread stops at a read error as it does at the end; a hash of part of the
+    // file is no hash of it.
+    const bool readFailed = std::ferror(f) != 0;
+    if (std::fclose(f) != 0 || readFailed) {
+        err = "Cannot read file for hashing";
+        return false;
+    }
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256_Final(digest, &ctx);
     hexOut = hexEncode(digest, sizeof(digest));
@@ -307,9 +312,9 @@ bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err
 std::string currentAppBundle() {
     @autoreleasepool {
         NSBundle* b = [NSBundle mainBundle];
-        if (!b) return "";
+        if (b == nil) return "";
         NSString* p = b.bundlePath;
-        if (!p || ![p hasSuffix:@".app"]) return "";
+        if (p == nil || ![p hasSuffix:@".app"]) return "";
         return p.UTF8String;
     }
 }
@@ -463,7 +468,7 @@ bool MacOSUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
                 break;
             }
         }
-        if (!newApp) {
+        if (newApp == nil) {
             outError = "Unpacked bundle did not contain *.app";
             return false;
         }

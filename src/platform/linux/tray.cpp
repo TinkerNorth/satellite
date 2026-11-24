@@ -10,6 +10,7 @@
 #include "net/pairing.h"
 #include "net/pairing_service.h"
 #include "tray_indicator.h"
+#include "core/checked_io.h"
 
 #include <libayatana-appindicator/app-indicator.h>
 #include <glib-unix.h>
@@ -28,17 +29,32 @@
 static AppIndicator* g_indicator = nullptr;
 static GtkWidget* g_updateItem = nullptr;
 static guint g_pollSourceId = 0;
+// GTK's cast macros go through void*; this is the same run-time checked cast,
+// typed at both ends.
+template <typename To, typename From> To* gobjectCast(From* object, GType type) {
+    return reinterpret_cast<To*>(
+        g_type_check_instance_cast(reinterpret_cast<GTypeInstance*>(object), type));
+}
+
 static UpdateState g_lastUpdateState = UpdateState::Idle;
 static std::string g_lastUpdateVersion;
 
-// `&` backgrounds xdg-open, so system() only reports shell-spawn failure.
+// xdg-open runs without a shell and without being waited for; GLib reaps it.
+// A spawn failure is the only one this side can see.
 static void openLocalUrl(const char* path) {
-    char cmd[128];
-    std::snprintf(cmd, sizeof(cmd), "xdg-open http://localhost:%d%s >/dev/null 2>&1 &",
-                  g_configStore->current()->webPort, path);
-    if (std::system(cmd) != 0) {
-        std::fprintf(stderr, "satellite: tray failed to spawn xdg-open for %s\n",
-                     path[0] != '\0' ? path : "/");
+    std::string url = "http://localhost:" + std::to_string(g_configStore->current()->webPort);
+    url += path;
+    std::string program = "xdg-open";
+    gchar* argv[] = {program.data(), url.data(), nullptr};
+    const auto flags = static_cast<GSpawnFlags>(static_cast<unsigned>(G_SPAWN_SEARCH_PATH) |
+                                                static_cast<unsigned>(G_SPAWN_STDOUT_TO_DEV_NULL) |
+                                                static_cast<unsigned>(G_SPAWN_STDERR_TO_DEV_NULL));
+    GError* error = nullptr;
+    if (g_spawn_async(nullptr, argv, nullptr, flags, nullptr, nullptr, nullptr, &error) == FALSE) {
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "satellite: tray failed to spawn xdg-open for %s: %s\n",
+                         path[0] != '\0' ? path : "/", error != nullptr ? error->message : ""));
+        g_clear_error(&error);
     }
 }
 
@@ -47,7 +63,7 @@ static void onOpenUI(GtkMenuItem*, gpointer) { openLocalUrl(""); }
 static void onDonate(GtkMenuItem*, gpointer) { openLocalUrl("/donate"); }
 
 static void onUpdateClick(GtkMenuItem*, gpointer) {
-    if (!g_updateService) return;
+    if (g_updateService == nullptr) return;
     UpdateStatusSnapshot s = g_updateService->snapshot();
     if (s.state == UpdateState::Downloaded && s.info.available) {
         g_updateService->requestInstall();
@@ -62,12 +78,12 @@ static void onUpdateClick(GtkMenuItem*, gpointer) {
 
 static void onQuit(GtkMenuItem*, gpointer) {
     g_appRunning = false;
-    g_httpServer.stop();
+    adminHttpServer().stop();
     gtk_main_quit();
 }
 
 static gboolean pollMenuState(gpointer) {
-    if (g_updateService && g_updateItem) {
+    if ((g_updateService != nullptr) && (g_updateItem != nullptr)) {
         UpdateStatusSnapshot s = g_updateService->snapshot();
         if (s.state != g_lastUpdateState || s.info.version != g_lastUpdateVersion) {
             std::string label;
@@ -85,8 +101,9 @@ static gboolean pollMenuState(gpointer) {
             } else {
                 label = "Check for Updates\xE2\x80\xA6";
             }
-            gtk_menu_item_set_label(GTK_MENU_ITEM(g_updateItem), label.c_str());
-            gtk_widget_set_sensitive(g_updateItem, enabled);
+            gtk_menu_item_set_label(gobjectCast<GtkMenuItem>(g_updateItem, GTK_TYPE_MENU_ITEM),
+                                    label.c_str());
+            gtk_widget_set_sensitive(g_updateItem, static_cast<gboolean>(enabled));
             g_lastUpdateState = s.state;
             g_lastUpdateVersion = s.info.version;
         }
@@ -160,7 +177,7 @@ bool addTrayIcon() {
     if (getenv("DISPLAY") == nullptr && getenv("WAYLAND_DISPLAY") == nullptr) { return false; }
     int argc = 0;
     char** argv = nullptr;
-    if (!gtk_init_check(&argc, &argv)) return false;
+    if (gtk_init_check(&argc, &argv) == 0) return false;
 #ifdef SATELLITE_HAS_LIBNOTIFY
     notify_init(APP_TITLE);
 #endif
@@ -175,27 +192,29 @@ bool addTrayIcon() {
 
     GtkWidget* openItem = gtk_menu_item_new_with_label("Open Web UI");
     g_signal_connect(openItem, "activate", G_CALLBACK(onOpenUI), nullptr);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), openItem);
+    gtk_menu_shell_append(gobjectCast<GtkMenuShell>(menu, GTK_TYPE_MENU_SHELL), openItem);
 
     GtkWidget* donateItem = gtk_menu_item_new_with_label("Donate");
     g_signal_connect(donateItem, "activate", G_CALLBACK(onDonate), nullptr);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), donateItem);
+    gtk_menu_shell_append(gobjectCast<GtkMenuShell>(menu, GTK_TYPE_MENU_SHELL), donateItem);
 
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(gobjectCast<GtkMenuShell>(menu, GTK_TYPE_MENU_SHELL),
+                          gtk_separator_menu_item_new());
 
     // Label kept current by pollMenuState().
     g_updateItem = gtk_menu_item_new_with_label("Check for Updates\xE2\x80\xA6");
     g_signal_connect(g_updateItem, "activate", G_CALLBACK(onUpdateClick), nullptr);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), g_updateItem);
+    gtk_menu_shell_append(gobjectCast<GtkMenuShell>(menu, GTK_TYPE_MENU_SHELL), g_updateItem);
 
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(gobjectCast<GtkMenuShell>(menu, GTK_TYPE_MENU_SHELL),
+                          gtk_separator_menu_item_new());
 
     GtkWidget* quitItem = gtk_menu_item_new_with_label("Quit");
     g_signal_connect(quitItem, "activate", G_CALLBACK(onQuit), nullptr);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), quitItem);
+    gtk_menu_shell_append(gobjectCast<GtkMenuShell>(menu, GTK_TYPE_MENU_SHELL), quitItem);
 
     gtk_widget_show_all(menu);
-    app_indicator_set_menu(g_indicator, GTK_MENU(menu));
+    app_indicator_set_menu(g_indicator, gobjectCast<GtkMenu>(menu, GTK_TYPE_MENU));
 
     g_pollSourceId = g_timeout_add(500, pollMenuState, nullptr);
     return true;
@@ -208,7 +227,7 @@ void removeTrayIcon() {
     }
     if (g_indicator != nullptr) {
         app_indicator_set_status(g_indicator, APP_INDICATOR_STATUS_PASSIVE);
-        g_object_unref(G_OBJECT(g_indicator));
+        g_object_unref(g_indicator); // takes a gpointer: no cast to make
         g_indicator = nullptr;
     }
     g_updateItem = nullptr;

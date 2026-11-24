@@ -101,7 +101,8 @@ static void test_silence_and_floor() {
     // -40 dBFS RMS on a sine is a peak of ~463; sweep across the threshold.
     uint16_t below = 1;
     uint16_t above = 0;
-    for (double peak = 300.0; peak < 700.0; peak += 10.0) {
+    for (int step = 0; step < 40; ++step) {
+        const double peak = 300.0 + 10.0 * step;
         const RumbleReport s = hapticWindowToRumble(window(peak, 0.0).data(), AUDIO_FRAME_SAMPLES);
         if (s.strongMagnitude == 0) {
             below = 0;
@@ -133,12 +134,11 @@ static void test_lane_magnitude_bounds() {
 }
 
 int main() {
-    test_full_scale_sine_reads_full_magnitude();
-    test_scale_is_linear_in_amplitude();
-    test_lanes_map_to_motors_and_stay_independent();
-    test_silence_and_floor();
-    test_lane_magnitude_bounds();
-
-    std::cout << "haptic_envelope: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("haptic_envelope", [] {
+        test_full_scale_sine_reads_full_magnitude();
+        test_scale_is_linear_in_amplitude();
+        test_lanes_map_to_motors_and_stay_independent();
+        test_silence_and_floor();
+        test_lane_magnitude_bounds();
+    });
 }

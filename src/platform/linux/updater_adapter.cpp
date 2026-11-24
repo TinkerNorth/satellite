@@ -5,6 +5,8 @@
 #include "update_helper_script.h"
 #include "core/github_release.h"
 #include "core/hex.h"
+#include "core/linux_upgrade_commands.h"
+#include "core/package_format.h"
 #include "core/version.h"
 
 #include <curl/curl.h>
@@ -34,7 +36,7 @@ struct CurlWriteCtx {
 size_t writeStringCb(char* ptr, size_t size, size_t nmemb, void* ud) {
     auto* ctx = static_cast<CurlWriteCtx*>(ud);
     size_t n = size * nmemb;
-    if (ctx->str) ctx->str->append(ptr, n);
+    if (ctx->str != nullptr) ctx->str->append(ptr, n);
     ctx->soFar += n;
     return n;
 }
@@ -42,7 +44,7 @@ size_t writeStringCb(char* ptr, size_t size, size_t nmemb, void* ud) {
 size_t writeFileCb(char* ptr, size_t size, size_t nmemb, void* ud) {
     auto* ctx = static_cast<CurlWriteCtx*>(ud);
     size_t n = size * nmemb;
-    if (ctx->file) ctx->file->write(ptr, n);
+    if (ctx->file != nullptr) ctx->file->write(ptr, n);
     ctx->soFar += n;
     return n;
 }
@@ -54,14 +56,14 @@ struct ProgressCtx {
 
 int xferInfoCb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* ctx = static_cast<ProgressCtx*>(clientp);
-    if (ctx->cancel && ctx->cancel->load()) return 1;
+    if ((ctx->cancel != nullptr) && ctx->cancel->load()) return 1;
     if (ctx->cb) ctx->cb(static_cast<uint64_t>(dlnow), static_cast<uint64_t>(dltotal));
     return 0;
 }
 
 bool httpGetToString(const std::string& url, std::string& out, std::string& err) {
     CURL* c = curl_easy_init();
-    if (!c) {
+    if (c == nullptr) {
         err = "curl_easy_init failed";
         return false;
     }
@@ -96,9 +98,7 @@ bool httpGetToString(const std::string& url, std::string& out, std::string& err)
         return false;
     }
     if (status < 200 || status >= 300) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "HTTP %ld", status);
-        err = buf;
+        err = "HTTP " + std::to_string(status);
         return false;
     }
     return true;
@@ -129,7 +129,7 @@ size_t etagHeaderCb(char* buffer, size_t size, size_t nitems, void* ud) {
 DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& ifNoneMatch) {
     DbFetchResponse r;
     CURL* c = curl_easy_init();
-    if (!c) return r;
+    if (c == nullptr) return r;
     CurlWriteCtx ctx;
     ctx.str = &r.body;
     struct curl_slist* headers = nullptr;
@@ -152,11 +152,9 @@ DbFetchResponse controllerDbHttpGet(const std::string& url, const std::string& i
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
     curl_slist_free_all(headers);
     curl_easy_cleanup(c);
-    if (rc != CURLE_OK) {
-        r.outcome = DbFetch::Failed;
-    } else if (status == 304) {
+    if (rc == CURLE_OK && status == 304) {
         r.outcome = DbFetch::NotModified;
-    } else if (status == 200) {
+    } else if (rc == CURLE_OK && status == 200) {
         r.outcome = DbFetch::Ok;
     } else {
         r.outcome = DbFetch::Failed;
@@ -171,7 +169,7 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
                    const std::function<void(uint64_t, uint64_t)>& onProgress,
                    const std::atomic<bool>* cancel, std::string& err) {
     CURL* c = curl_easy_init();
-    if (!c) {
+    if (c == nullptr) {
         err = "curl_easy_init failed";
         return false;
     }
@@ -208,21 +206,28 @@ bool httpGetToFile(const std::string& url, const std::string& dstPath,
     curl_easy_cleanup(c);
     out.close();
 
+    // A failed download is removed. When even that fails, the next attempt
+    // overwrites it, and the error says where it was left.
+    const auto discard = [&dstPath](std::string why) {
+        if (std::remove(dstPath.c_str()) != 0 && errno != ENOENT) {
+            why += " (partial download left at " + dstPath + ")";
+        }
+        return why;
+    };
     if (rc == CURLE_ABORTED_BY_CALLBACK) {
-        std::remove(dstPath.c_str());
-        err = "cancelled";
+        err = discard("cancelled");
         return false;
     }
     if (rc != CURLE_OK) {
-        std::remove(dstPath.c_str());
-        err = curl_easy_strerror(rc);
+        err = discard(curl_easy_strerror(rc));
         return false;
     }
     if (status < 200 || status >= 300) {
-        std::remove(dstPath.c_str());
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "HTTP %ld", status);
-        err = buf;
+        err = discard("HTTP " + std::to_string(status));
+        return false;
+    }
+    if (out.fail()) {
+        err = discard("Cannot write the download to " + dstPath);
         return false;
     }
     return true;
@@ -274,16 +279,22 @@ std::string fetchAssetDigest(const GitHubRelease& rel, const std::string& assetN
 
 bool sha256OfFile(const std::string& path, std::string& hexOut, std::string& err) {
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) {
+    if (f == nullptr) {
         err = "Cannot open file for hashing";
         return false;
     }
     crypto_hash_sha256_state st;
     crypto_hash_sha256_init(&st);
     unsigned char buf[64 * 1024];
-    size_t n;
+    size_t n = 0;
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) { crypto_hash_sha256_update(&st, buf, n); }
-    std::fclose(f);
+    // fread stops at a read error as it does at the end; a hash of part of the
+    // file is no hash of it.
+    const bool readFailed = std::ferror(f) != 0;
+    if (std::fclose(f) != 0 || readFailed) {
+        err = "Cannot read file for hashing";
+        return false;
+    }
     unsigned char digest[crypto_hash_sha256_BYTES];
     crypto_hash_sha256_final(&st, digest);
     hexOut = hexEncode(digest, sizeof(digest));
@@ -344,16 +355,19 @@ LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::detectInstallType() const 
     return InstallType::Portable;
 }
 
-// dpkg or rpm, by which package database exists; with both present, whichever
-// owns the binary, dpkg's file list being the cheap check.
+// The package this build was made for (CMake SATELLITE_PACKAGE_FORMAT), not
+// a guess from which package database exists: a binary at /usr/bin from
+// neither package is a build installed by hand.
 LinuxUpdaterAdapter::InstallType LinuxUpdaterAdapter::packagedInstallType() {
-    const bool hasDpkg = pathExists("/var/lib/dpkg/status");
-    const bool hasRpm = pathExists("/var/lib/rpm");
-    if (hasRpm && !hasDpkg) return InstallType::Rpm;
-    if (hasDpkg && !hasRpm) return InstallType::Deb;
-    if (hasDpkg && pathExists("/var/lib/dpkg/info/satellite.list")) return InstallType::Deb;
-    if (hasRpm) return InstallType::Rpm;
-    return InstallType::Deb;
+    switch (satellite::parsePackageFormat(SATELLITE_PACKAGE_FORMAT)) {
+    case satellite::PackageFormat::Deb:
+        return InstallType::Deb;
+    case satellite::PackageFormat::Rpm:
+        return InstallType::Rpm;
+    case satellite::PackageFormat::None:
+        return InstallType::Portable;
+    }
+    return InstallType::Portable;
 }
 
 LinuxUpdaterAdapter::LinuxUpdaterAdapter(std::string owner, std::string repo)
@@ -451,7 +465,7 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         }
         method = InstallMethod::Manual;
         // Correct once the APT repo is added (per the install instructions).
-        manual = "sudo apt update && sudo apt install --only-upgrade satellite";
+        manual = satellite::linux_upgrade::DEB;
         break;
     case InstallType::Rpm:
         if (!pickRpmAsset(pick, asset)) {
@@ -459,17 +473,17 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
             return false;
         }
         method = InstallMethod::Manual;
-        manual = "sudo dnf upgrade --refresh satellite";
+        manual = satellite::linux_upgrade::RPM;
         break;
     case InstallType::Aur:
-        // AUR -bin wraps the AppImage; surface metadata for release notes only,
-        // never download it; user upgrades via their AUR helper.
+        // satellite-bin wraps the AppImage; surface metadata for release notes
+        // only, never download it; pacman upgrades it from Satellite's repository.
         if (!pickAppImageAsset(pick, asset)) {
             outError = "No AppImage asset in release " + pick.tagName;
             return false;
         }
         method = InstallMethod::Manual;
-        manual = "yay -Syu satellite-bin   # or: paru -Syu satellite-bin";
+        manual = satellite::linux_upgrade::PACMAN;
         break;
     case InstallType::Snap:
     case InstallType::Flatpak:
@@ -479,9 +493,8 @@ bool LinuxUpdaterAdapter::fetchLatestRelease(const std::string& channel,
         // GitHub assets at all.
         haveAsset = pickAppImageAsset(pick, asset);
         method = InstallMethod::Manual;
-        manual = (installType_ == InstallType::Snap)
-                     ? "sudo snap refresh satellite"
-                     : "flatpak update io.github.tinkernorth.satellite";
+        manual = (installType_ == InstallType::Snap) ? satellite::linux_upgrade::SNAP
+                                                     : satellite::linux_upgrade::FLATPAK;
         break;
     case InstallType::Portable:
         if (pickAppImageAsset(pick, asset)) {
@@ -521,11 +534,11 @@ bool LinuxUpdaterAdapter::downloadArtifact(
     const std::atomic<bool>* cancel, std::string& outLocalPath, std::string& outError) {
     const char* xdg = std::getenv("XDG_CACHE_HOME");
     std::string dir;
-    if (xdg && xdg[0]) {
+    if ((xdg != nullptr) && (xdg[0] != '\0')) {
         dir = std::string(xdg) + "/satellite/updates";
     } else {
         const char* home = std::getenv("HOME");
-        dir = std::string(home ? home : "/tmp") + "/.cache/satellite/updates";
+        dir = std::string((home != nullptr) ? home : "/tmp") + "/.cache/satellite/updates";
     }
     for (size_t i = 1; i < dir.size(); i++) {
         if (dir[i] == '/') {
@@ -575,7 +588,7 @@ bool LinuxUpdaterAdapter::applyUpdate(const std::string& localPath, const Update
 
     // $APPIMAGE is the running binary's path.
     const char* appimg = std::getenv("APPIMAGE");
-    if (!appimg || appimg[0] == '\0') {
+    if ((appimg == nullptr) || appimg[0] == '\0') {
         outError = "APPIMAGE env var missing (am I really an AppImage?)";
         return false;
     }

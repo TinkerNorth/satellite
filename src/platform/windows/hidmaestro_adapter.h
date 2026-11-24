@@ -89,12 +89,12 @@ class HidMaestroAdapter : public IGamepadPort {
     std::vector<SettledSerial> settledSerials() override;
     HostDisabled hostDisabled(uint32_t serial) const override;
     void setRumbleCallback(RumbleCallback cb) override;
-    void setLightbarCallback(LightbarCallback cb) override;
-    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override;
-    void setPlayerLedsCallback(PlayerLedsCallback cb) override;
-    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override;
-    void setHapticAudioCallback(HapticAudioCallback cb) override;
-    void setMicLedCallback(MicLedCallback cb) override;
+    void setLightbarCallback(const LightbarCallback& cb) override;
+    void setTriggerEffectsCallback(const TriggerEffectsCallback& cb) override;
+    void setPlayerLedsCallback(const PlayerLedsCallback& cb) override;
+    void setSpeakerAudioCallback(const SpeakerAudioCallback& cb) override;
+    void setHapticAudioCallback(const HapticAudioCallback& cb) override;
+    void setMicLedCallback(const MicLedCallback& cb) override;
     bool submitMicAudioPcm(uint32_t serial, const int16_t* mono48k, size_t samples) override;
     // Published at plug, read without busMtx_: the core asks under service.state.
     bool hasAudioPersona(uint32_t serial) const override;

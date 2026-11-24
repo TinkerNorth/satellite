@@ -1,14 +1,13 @@
 # Maintainer: TinkerNorth <https://github.com/TinkerNorth/satellite>
 #
-# satellite-bin: Arch User Repository package that re-bundles the
-# upstream signed AppImage. Build it locally with `makepkg -si`, or
-# install via an AUR helper:
+# satellite-bin: the pacman package that re-bundles the release's AppImage.
+# publish-repos.yml builds it with scripts/build-arch-package.sh for
+# Satellite's signed pacman repository (the AUR does not carry it: AUR
+# registration is closed). Install from the repository as
+# packaging/aur/README.md shows, or build it here with `makepkg -si`.
 #
-#   yay -S satellite-bin
-#   paru -S satellite-bin
-#
-# Updating: bump pkgver, refresh `b2sums` / `sha256sums` from the
-# release's SHA256SUMS file, then regenerate .SRCINFO with
+# Updating by hand: bump pkgver, refresh `sha256sums` from the release's
+# SHA256SUMS file (`updpkgsums`), then regenerate .SRCINFO with
 # `makepkg --printsrcinfo > .SRCINFO`.
 #
 # Why -bin? An "from-source" Arch package would have to drag in
@@ -24,6 +23,12 @@ arch=('x86_64')
 install='satellite-bin.install'
 url="https://github.com/TinkerNorth/satellite"
 license=('LGPL-3.0-or-later')
+# The AppImage is a runtime with a squashfs image appended. makepkg's strip
+# step treats it as an ELF binary and cuts the image off, which is how 2.3.0's
+# package installed a runtime that could not start; and there is nothing to
+# split into a -debug package. linux-ci.yml's arch job holds the installed
+# AppImage to the packaged bytes.
+options=('!strip' '!debug')
 # Runtime dependencies the AppImage wrapper unwraps to. Most of these are
 # present in any GTK-using desktop install but we list them so makepkg
 # fails fast on minimal systems.

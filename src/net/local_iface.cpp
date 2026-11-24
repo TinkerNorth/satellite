@@ -234,7 +234,7 @@ static std::wstring lowerWide(const wchar_t* w) {
 }
 
 // An enabled inbound allow rule for `self` folds its profiles into the mask.
-static void noteSelfInboundRule(INetFwRule* rule, const std::wstring& self, int& ruleMask,
+static void noteSelfInboundRule(INetFwRule* rule, const std::wstring& self, uint32_t& ruleMask,
                                 bool& haveRule) {
     NET_FW_RULE_DIRECTION dir = NET_FW_RULE_DIR_IN;
     NET_FW_ACTION action = NET_FW_ACTION_BLOCK;
@@ -247,7 +247,7 @@ static void noteSelfInboundRule(INetFwRule* rule, const std::wstring& self, int&
     if (inbound && allows && on && named && lowerWide(app) == self) {
         haveRule = true;
         long profiles = 0;
-        if (SUCCEEDED(rule->get_Profiles(&profiles))) ruleMask |= static_cast<int>(profiles);
+        if (SUCCEEDED(rule->get_Profiles(&profiles))) ruleMask |= static_cast<uint32_t>(profiles);
     }
     if (app != nullptr) SysFreeString(app);
 }
@@ -255,7 +255,7 @@ static void noteSelfInboundRule(INetFwRule* rule, const std::wstring& self, int&
 // Every rule the policy holds, shown to noteSelfInboundRule. False when the
 // enumeration could not be reached at all, which the caller reports as
 // unsupported rather than as "no rule".
-static bool scanRulesForSelf(INetFwPolicy2* policy, const std::wstring& self, int& ruleMask,
+static bool scanRulesForSelf(INetFwPolicy2* policy, const std::wstring& self, uint32_t& ruleMask,
                              bool& haveRule) {
     INetFwRules* rules = nullptr;
     if (FAILED(policy->get_Rules(&rules)) || rules == nullptr) return false;
@@ -293,8 +293,8 @@ static bool scanRulesForSelf(INetFwPolicy2* policy, const std::wstring& self, in
     return haveEnum;
 }
 
-bool selfInboundFirewallRules(int& ruleMask, bool& haveRule) {
-    ruleMask = 0;
+bool selfInboundFirewallRules(uint32_t& ruleMask, bool& haveRule) {
+    ruleMask = 0U;
     haveRule = false;
 
     wchar_t exe[MAX_PATH] = {};
@@ -323,7 +323,7 @@ std::vector<LocalInterface> enumerateInterfaces(bool) {
     for (struct ifaddrs* a = addrs; a != nullptr; a = a->ifa_next) {
         if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET) { continue; }
         if ((a->ifa_flags & IFF_UP) == 0 || (a->ifa_flags & IFF_LOOPBACK) != 0) { continue; }
-        sockaddr_in* sa = reinterpret_cast<sockaddr_in*>(a->ifa_addr);
+        auto* sa = reinterpret_cast<sockaddr_in*>(a->ifa_addr);
         char buf[INET_ADDRSTRLEN] = {};
         if (inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf)) == nullptr) { continue; }
         LocalInterface f;
@@ -339,7 +339,7 @@ std::vector<LocalInterface> enumerateInterfaces(bool) {
 
 bool allowPublicFirewall() { return false; }
 
-bool selfInboundFirewallRules(int&, bool&) { return false; }
+bool selfInboundFirewallRules(uint32_t&, bool&) { return false; }
 #endif
 
 bool resolveBoundIPv4(const std::string& selectedName, uint32_t& ipv4NetworkOrder) {

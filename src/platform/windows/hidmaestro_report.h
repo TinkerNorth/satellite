@@ -21,6 +21,7 @@
 #include "core/types.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
@@ -97,10 +98,10 @@ inline uint16_t x360StickY(int16_t v) { return static_cast<uint16_t>(32767 - sta
 // Branch ordering mirrors ds4HatFromButtons so contradictory bit combinations
 // resolve to the same direction on every backend.
 inline uint8_t x360HatFromButtons(uint16_t wButtons) {
-    const bool up = (wButtons & 0x0001) != 0;
-    const bool down = (wButtons & 0x0002) != 0;
-    const bool left = (wButtons & 0x0004) != 0;
-    const bool right = (wButtons & 0x0008) != 0;
+    const bool up = bits::anySet(wButtons, 0x0001U);
+    const bool down = bits::anySet(wButtons, 0x0002U);
+    const bool left = bits::anySet(wButtons, 0x0004U);
+    const bool right = bits::anySet(wButtons, 0x0008U);
     if (up && right) return 2;
     if (up && left) return 8;
     if (down && right) return 4;
@@ -114,10 +115,7 @@ inline uint8_t x360HatFromButtons(uint16_t wButtons) {
 
 inline void packX360Report(const GamepadReport& pad, uint8_t out[X360_REPORT_BYTES]) {
     std::memset(out, 0, X360_REPORT_BYTES);
-    auto le16 = [&out](int off, uint16_t v) {
-        out[off] = static_cast<uint8_t>(v & 0xFF);
-        out[off + 1] = static_cast<uint8_t>(v >> 8);
-    };
+    auto le16 = [&out](int off, uint16_t v) { writeLE16(out + off, v); };
     le16(0, x360StickX(pad.sThumbLX));
     le16(2, x360StickY(pad.sThumbLY));
     le16(4, x360StickX(pad.sThumbRX));
@@ -133,19 +131,19 @@ inline void packX360Report(const GamepadReport& pad, uint8_t out[X360_REPORT_BYT
 
     const uint16_t b = pad.wButtons;
     uint8_t btns = 0;
-    if (b & 0x1000) btns |= 0x01; // A
-    if (b & 0x2000) btns |= 0x02; // B
-    if (b & 0x4000) btns |= 0x04; // X
-    if (b & 0x8000) btns |= 0x08; // Y
-    if (b & 0x0100) btns |= 0x10; // LB
-    if (b & 0x0200) btns |= 0x20; // RB
-    if (b & 0x0020) btns |= 0x40; // Back
-    if (b & 0x0010) btns |= 0x80; // Start
+    if (bits::anySet(b, 0x1000U)) btns |= 0x01U; // A
+    if (bits::anySet(b, 0x2000U)) btns |= 0x02U; // B
+    if (bits::anySet(b, 0x4000U)) btns |= 0x04U; // X
+    if (bits::anySet(b, 0x8000U)) btns |= 0x08U; // Y
+    if (bits::anySet(b, 0x0100U)) btns |= 0x10U; // LB
+    if (bits::anySet(b, 0x0200U)) btns |= 0x20U; // RB
+    if (bits::anySet(b, 0x0020U)) btns |= 0x40U; // Back
+    if (bits::anySet(b, 0x0010U)) btns |= 0x80U; // Start
     out[14] = btns;
     uint8_t high = 0;
-    if (b & 0x0040) high |= 0x01; // LS
-    if (b & 0x0080) high |= 0x02; // RS
-    high |= static_cast<uint8_t>((x360HatFromButtons(b) & 0x0F) << 2);
+    if (bits::anySet(b, 0x0040U)) high |= 0x01U; // LS
+    if (bits::anySet(b, 0x0080U)) high |= 0x02U; // RS
+    high |= bits::lowByte((bits::u32(x360HatFromButtons(b)) & 0x0FU) << 2U);
     out[15] = high;
 }
 
@@ -153,10 +151,7 @@ inline void packX360Report(const GamepadReport& pad, uint8_t out[X360_REPORT_BYT
 // Trigger range is 10-bit; Guide rides btnHigh bit 6 (its only path — the HID
 // report has no Guide usage).
 inline void packGip(const GamepadReport& pad, uint8_t out[INPUT_GIP_LENGTH]) {
-    auto le16 = [&out](int off, uint16_t v) {
-        out[off] = static_cast<uint8_t>(v & 0xFF);
-        out[off + 1] = static_cast<uint8_t>(v >> 8);
-    };
+    auto le16 = [&out](int off, uint16_t v) { writeLE16(out + off, v); };
     le16(0, x360StickX(pad.sThumbLX));
     le16(2, x360StickY(pad.sThumbLY));
     le16(4, x360StickX(pad.sThumbRX));
@@ -166,20 +161,20 @@ inline void packGip(const GamepadReport& pad, uint8_t out[INPUT_GIP_LENGTH]) {
 
     const uint16_t b = pad.wButtons;
     uint8_t low = 0;
-    if (b & 0x1000) low |= 0x01; // A
-    if (b & 0x2000) low |= 0x02; // B
-    if (b & 0x4000) low |= 0x04; // X
-    if (b & 0x8000) low |= 0x08; // Y
-    if (b & 0x0100) low |= 0x10; // LB
-    if (b & 0x0200) low |= 0x20; // RB
-    if (b & 0x0040) low |= 0x40; // LS
-    if (b & 0x0080) low |= 0x80; // RS
+    if (bits::anySet(b, 0x1000U)) low |= 0x01U; // A
+    if (bits::anySet(b, 0x2000U)) low |= 0x02U; // B
+    if (bits::anySet(b, 0x4000U)) low |= 0x04U; // X
+    if (bits::anySet(b, 0x8000U)) low |= 0x08U; // Y
+    if (bits::anySet(b, 0x0100U)) low |= 0x10U; // LB
+    if (bits::anySet(b, 0x0200U)) low |= 0x20U; // RB
+    if (bits::anySet(b, 0x0040U)) low |= 0x40U; // LS
+    if (bits::anySet(b, 0x0080U)) low |= 0x80U; // RS
     out[12] = low;
     uint8_t high = 0;
-    if (b & 0x0020) high |= 0x01; // Back
-    if (b & 0x0010) high |= 0x02; // Start
-    high |= static_cast<uint8_t>((x360HatFromButtons(b) & 0x0F) << 2);
-    if (b & 0x0400) high |= 0x40; // Guide
+    if (bits::anySet(b, 0x0020U)) high |= 0x01U; // Back
+    if (bits::anySet(b, 0x0010U)) high |= 0x02U; // Start
+    high |= bits::lowByte((bits::u32(x360HatFromButtons(b)) & 0x0FU) << 2U);
+    if (bits::anySet(b, 0x0400U)) high |= 0x40U; // Guide
     out[13] = high;
 }
 
@@ -248,23 +243,23 @@ inline constexpr size_t DS5_PAYLOAD_BYTES = 63;
 // DS5 battery byte (full-report byte 53): low nibble = level in tenths, high
 // nibble = status (0 discharging, 1 charging, 2 full).
 inline uint8_t ds5BatteryByte(const BatteryReport& report) {
-    int nibble = (report.level == BATTERY_LEVEL_UNKNOWN) ? 5 : static_cast<int>(report.level) / 10;
-    if (nibble > 10) nibble = 10;
+    uint32_t nibble = (report.level == BATTERY_LEVEL_UNKNOWN) ? 5U : bits::u32(report.level) / 10U;
+    if (nibble > 10U) nibble = 10U;
     switch (report.status) {
     case BATTERY_STATUS_CHARGING:
-        return static_cast<uint8_t>(0x10 | nibble);
+        return bits::lowByte(0x10U | nibble);
     case BATTERY_STATUS_FULL:
     case BATTERY_STATUS_WIRED:
-        return static_cast<uint8_t>(0x20 | 10);
+        return bits::lowByte(0x20U | 10U);
     default:
-        return static_cast<uint8_t>(nibble);
+        return bits::lowByte(nibble);
     }
 }
 
 struct Ds5InputState {
     GamepadReport pad{};
-    MotionReport motion{};           // wire scale; rescaled during packing
-    uint8_t batteryByte = 0x20 | 10; // full/wired until a battery stream arrives
+    MotionReport motion{};             // wire scale; rescaled during packing
+    uint8_t batteryByte = 0x20U | 10U; // full/wired until a battery stream arrives
     TouchpadFinger finger0{};
     TouchpadFinger finger1{};
     uint8_t touchTrackingId0 = 0;
@@ -290,16 +285,15 @@ inline void packDs5Payload(const Ds5InputState& st, uint8_t out[DS5_PAYLOAD_BYTE
     // shoulders / menu / thumbs at 8.
     const uint16_t b = st.pad.wButtons;
     const uint16_t buttons = sonyButtonsFromXusb(b, st.pad.bLeftTrigger, st.pad.bRightTrigger);
-    out[7] = static_cast<uint8_t>(buttons & 0xFF);
-    out[8] = static_cast<uint8_t>(buttons >> 8);
+    writeLE16(out + 7, buttons);
 
     uint8_t meta = 0;
-    if (b & 0x0400) meta |= 0x01; // Guide -> PS
-    if (st.touchpadButtonPressed) meta |= 0x02;
+    if (bits::anySet(b, 0x0400U)) meta |= 0x01U; // Guide -> PS
+    if (st.touchpadButtonPressed) meta |= 0x02U;
     // The DualSense is the only identity with a mute button, so it is the only
     // one that consumes WBUTTON_MIC_MUTE; every other packer leaves 0x0800
     // alone. Bit 0x04 of buttons[2] is where hid-playstation reads it.
-    if (b & WBUTTON_MIC_MUTE) meta |= 0x04;
+    if (bits::anySet(b, WBUTTON_MIC_MUTE)) meta |= 0x04U;
     out[9] = meta;
 
     const MotionReport motion = sonyMotionFromWire(st.motion);
@@ -388,9 +382,9 @@ inline uint16_t switchStickRaw(int16_t v) {
 }
 
 inline void switchPackStick(uint8_t* dst, uint16_t x, uint16_t y) {
-    dst[0] = static_cast<uint8_t>(x & 0xFF);
-    dst[1] = static_cast<uint8_t>(((x >> 8) & 0x0F) | ((y & 0x0F) << 4));
-    dst[2] = static_cast<uint8_t>(y >> 4);
+    dst[0] = bits::lowByte(bits::u32(x));
+    dst[1] = bits::lowByte(((bits::u32(x) >> 8U) & 0x0FU) | ((bits::u32(y) & 0x0FU) << 4U));
+    dst[2] = bits::lowByte(bits::u32(y) >> 4U);
 }
 
 inline int16_t switchImuRaw(float value, float scale) {
@@ -407,30 +401,30 @@ inline void packSwitchBody(const InputReport& input, const MotionReport& motion,
     const GamepadReport& pad = input.pad;
     const uint16_t b = pad.wButtons;
     uint8_t right = 0;
-    if (b & 0x4000) right |= 0x01;                               // X (west)  -> Y
-    if (b & 0x8000) right |= 0x02;                               // Y (north) -> X
-    if (b & 0x1000) right |= 0x04;                               // A (south) -> B
-    if (b & 0x2000) right |= 0x08;                               // B (east)  -> A
-    if (b & 0x0200) right |= 0x40;                               // RB -> R
-    if (pad.bRightTrigger > SWITCH_TRIGGER_ON_HM) right |= 0x80; // ZR
+    if (bits::anySet(b, 0x4000U)) right |= 0x01U;                 // X (west)  -> Y
+    if (bits::anySet(b, 0x8000U)) right |= 0x02U;                 // Y (north) -> X
+    if (bits::anySet(b, 0x1000U)) right |= 0x04U;                 // A (south) -> B
+    if (bits::anySet(b, 0x2000U)) right |= 0x08U;                 // B (east)  -> A
+    if (bits::anySet(b, 0x0200U)) right |= 0x40U;                 // RB -> R
+    if (pad.bRightTrigger > SWITCH_TRIGGER_ON_HM) right |= 0x80U; // ZR
     out[2] = right;
 
     uint8_t shared = 0;
-    if (b & 0x0020) shared |= 0x01;                          // Back  -> Minus
-    if (b & 0x0010) shared |= 0x02;                          // Start -> Plus
-    if (b & 0x0080) shared |= 0x04;                          // RS -> right stick click
-    if (b & 0x0040) shared |= 0x08;                          // LS -> left stick click
-    if (b & 0x0400) shared |= 0x10;                          // Guide -> Home
-    if (input.extButtons & EXT_BUTTON_MISC1) shared |= 0x20; // misc1 -> Capture
+    if (bits::anySet(b, 0x0020U)) shared |= 0x01U; // Back  -> Minus
+    if (bits::anySet(b, 0x0010U)) shared |= 0x02U; // Start -> Plus
+    if (bits::anySet(b, 0x0080U)) shared |= 0x04U; // RS -> right stick click
+    if (bits::anySet(b, 0x0040U)) shared |= 0x08U; // LS -> left stick click
+    if (bits::anySet(b, 0x0400U)) shared |= 0x10U; // Guide -> Home
+    if (bits::anySet(input.extButtons, EXT_BUTTON_MISC1)) shared |= 0x20U; // misc1 -> Capture
     out[3] = shared;
 
     uint8_t left = 0;
-    if (b & 0x0002) left |= 0x01;                              // dpad down
-    if (b & 0x0001) left |= 0x02;                              // dpad up
-    if (b & 0x0008) left |= 0x04;                              // dpad right
-    if (b & 0x0004) left |= 0x08;                              // dpad left
-    if (b & 0x0100) left |= 0x40;                              // LB -> L
-    if (pad.bLeftTrigger > SWITCH_TRIGGER_ON_HM) left |= 0x80; // ZL
+    if (bits::anySet(b, 0x0002U)) left |= 0x01U;                // dpad down
+    if (bits::anySet(b, 0x0001U)) left |= 0x02U;                // dpad up
+    if (bits::anySet(b, 0x0008U)) left |= 0x04U;                // dpad right
+    if (bits::anySet(b, 0x0004U)) left |= 0x08U;                // dpad left
+    if (bits::anySet(b, 0x0100U)) left |= 0x40U;                // LB -> L
+    if (pad.bLeftTrigger > SWITCH_TRIGGER_ON_HM) left |= 0x80U; // ZL
     out[4] = left;
 
     switchPackStick(out + 5, switchStickRaw(pad.sThumbLX), switchStickRaw(pad.sThumbLY));
@@ -453,11 +447,8 @@ inline void packSwitchBody(const InputReport& input, const MotionReport& motion,
     const int16_t gy = switchImuRaw(-dpsX, gyroScale);
     const int16_t gz = switchImuRaw(dpsY, gyroScale);
     for (int frame = 0; frame < 3; ++frame) {
-        uint8_t* p = out + 12 + frame * 12;
-        auto le16 = [&p](int off, int16_t v) {
-            p[off] = static_cast<uint8_t>(static_cast<uint16_t>(v) & 0xFF);
-            p[off + 1] = static_cast<uint8_t>(static_cast<uint16_t>(v) >> 8);
-        };
+        uint8_t* p = out + 12 + static_cast<ptrdiff_t>(frame) * 12;
+        auto le16 = [&p](int off, int16_t v) { writeLE16(p + off, bits::asUint16(v)); };
         le16(0, ax);
         le16(2, ay);
         le16(4, az);
@@ -492,9 +483,9 @@ struct DecodedOutput {
 // Switch HD-rumble block -> a coarse 0..1 amplitude (the same reduction the
 // HIDMaestro SDK applies): HF band from byte 1, LF band from bytes 2-3.
 inline float switchRumbleAmplitude(const uint8_t* block) {
-    float hf = static_cast<float>(block[1] & 0xFE) / 200.0f;
+    float hf = static_cast<float>(bits::u32(block[1]) & 0xFEU) / 200.0f;
     if (hf > 1.0f) hf = 1.0f;
-    int lfRaw = (static_cast<int>(block[3]) - 0x40) * 2 + ((block[2] & 0x80) ? 1 : 0);
+    int lfRaw = (static_cast<int>(block[3]) - 0x40) * 2 + (bits::anySet(block[2], 0x80U) ? 1 : 0);
     if (lfRaw < 0) lfRaw = 0;
     float lf = static_cast<float>(lfRaw) / 101.0f;
     if (lf > 1.0f) lf = 1.0f;
@@ -514,8 +505,9 @@ inline DecodedOutput decodeXboxOutput(const OutputPacket& pkt) {
 
 inline DecodedOutput decodeDs4Output(const OutputPacket& pkt) {
     DecodedOutput out;
-    if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || pkt.reportId != DS4V2_OUTPUT_REPORT_ID)
+    if (pkt.source != OUTPUT_SOURCE_HID_OUTPUT || pkt.reportId != DS4V2_OUTPUT_REPORT_ID) {
         return out;
+    }
     const Ds4OutputReport rpt = ds4ParseOutputReport(pkt.reportId, pkt.data, pkt.size);
     if (rpt.valid && rpt.rumbleValid) {
         out.hasRumble = true;
@@ -542,8 +534,8 @@ inline DecodedOutput decodeDualSenseOutput(const OutputPacket& pkt) {
     // Rumble: valid_flag0 bits 0-1 (compatible / haptics select), or
     // valid_flag2 bit 2 COMPATIBLE_VIBRATION2, which 2.24+ firmware
     // rumble packets (SDL, hid-playstation) set instead of / beside them.
-    const bool flag0Rumble = pkt.size >= 4 && (pkt.data[0] & 0x03);
-    const bool flag2Rumble = pkt.size >= 39 && (pkt.data[38] & 0x04);
+    const bool flag0Rumble = pkt.size >= 4 && bits::anySet(pkt.data[0], 0x03U);
+    const bool flag2Rumble = pkt.size >= 39 && bits::anySet(pkt.data[38], 0x04U);
     if (flag0Rumble || flag2Rumble) {
         out.hasRumble = true;
         out.rumble.weakMagnitude = static_cast<uint16_t>(pkt.data[2]) * 257;
@@ -555,28 +547,28 @@ inline DecodedOutput decodeDualSenseOutput(const OutputPacket& pkt) {
     // above PULSE is a mode this decoder has no name for, so it is
     // dropped here rather than forwarded for the service to reject:
     // an unknown lamp mode is not a mute state to guess at.
-    if (pkt.size >= 9 && (pkt.data[1] & 0x01) && pkt.data[8] < MIC_LED_STATE_COUNT) {
+    if (pkt.size >= 9 && bits::anySet(pkt.data[1], 0x01U) && pkt.data[8] < MIC_LED_STATE_COUNT) {
         out.hasMicLed = true;
         out.micLed = pkt.data[8];
     }
     // valid_flag0 bit 2 = right trigger effect, bit 3 = left.
-    if (pkt.size >= 32 && (pkt.data[0] & 0x04)) {
+    if (pkt.size >= 32 && bits::anySet(pkt.data[0], 0x04U)) {
         out.hasRightTriggerEffect = true;
         std::memcpy(out.rightTriggerEffect, pkt.data + 10, TRIGGER_EFFECT_BLOCK_BYTES);
     }
-    if (pkt.size >= 32 && (pkt.data[0] & 0x08)) {
+    if (pkt.size >= 32 && bits::anySet(pkt.data[0], 0x08U)) {
         out.hasLeftTriggerEffect = true;
         std::memcpy(out.leftTriggerEffect, pkt.data + 21, TRIGGER_EFFECT_BLOCK_BYTES);
     }
     // valid_flag1 bit 4 = player-indicator control.
-    if (pkt.size >= 44 && (pkt.data[1] & 0x10)) {
+    if (pkt.size >= 44 && bits::anySet(pkt.data[1], 0x10U)) {
         out.hasPlayerLeds = true;
-        out.playerLeds = static_cast<uint8_t>(pkt.data[43] & 0x1F);
+        out.playerLeds = bits::lowByte(bits::u32(pkt.data[43]) & 0x1FU);
     }
     // Lightbar: valid_flag1 bit 2 is the only control-enable (SDL
     // ucEnableBits2, hid-playstation LIGHTBAR_CONTROL_ENABLE); valid_flag2
     // bit 2 is a rumble mode, so it must not gate the colour bytes.
-    if (pkt.size >= 47 && (pkt.data[1] & 0x04)) {
+    if (pkt.size >= 47 && bits::anySet(pkt.data[1], 0x04U)) {
         out.hasLightbar = true;
         out.r = pkt.data[44];
         out.g = pkt.data[45];
@@ -601,7 +593,7 @@ inline DecodedOutput decodeSwitchProOutput(const OutputPacket& pkt) {
     out.rumble.weakMagnitude = static_cast<uint16_t>(right * 65535.0f);
     if (pkt.reportId == 0x01 && pkt.size >= 11 && pkt.data[9] == 0x30) {
         out.hasPlayerLeds = true;
-        out.playerLeds = static_cast<uint8_t>(pkt.data[10] & 0x0F);
+        out.playerLeds = bits::lowNibble(pkt.data[10]);
     }
     return out;
 }

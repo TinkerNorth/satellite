@@ -3,14 +3,16 @@
 All theme colors for the Satellite local admin page live in
 [web/style.css](web/style.css) as CSS custom properties on `:root`.
 
-Token names follow the cross-repo schema documented in
-`d:\TinkerNorth\BRAND.md` (TinkerNorth design system). When updating a
-value, keep it in sync with the matching token in dish-android, dish-mac,
-and dish-linux.
+Token names follow the TinkerNorth cross-repo schema. The schema has no
+document of its own (no `BRAND.md` exists in any TinkerNorth repository); the
+table below and each client's `DESIGN.md` are where it is written down. When
+updating a value, keep it in sync with the matching token in Dish for Android,
+Dish for iOS, Dish for macOS, Dish for Windows and Dish for Linux, and with
+the palette of the website, https://dish.tinkernorth.com.
 
 ## Core tokens (cross-repo schema)
 
-These 12 names are the contract shared with every other project in the
+These 13 names are the contract shared with every other project in the
 TinkerNorth family.
 
 Palette: cyan / deep-space, mirroring dish-website.
@@ -95,7 +97,7 @@ const accent = themeColor('--primary');
 ## Outliers: illustration assets (intentional, never theme tokens)
 
 The controller artwork is vendored from Kenney's Input Prompts pack
-(<https://kenney.nl/assets/input-prompts>, CC0 1.0 — no attribution
+(<https://kenney.nl/assets/input-prompts>, CC0 1.0, no attribution
 required; noted here so provenance stays on record), recolored per
 surface:
 
@@ -114,7 +116,7 @@ pair `driver-kernel.svg` / `driver-user.svg` used by the backend setup
 guide) are original in-repo drawings in the same baked-accent flat style,
 not vendored art.
 
-## Known follow-ups (out of scope for this PR)
+## Known follow-ups
 
 1. **Asset duplication**: [web/icon.png](web/icon.png) and
    [web/img/satellite-icon.png](web/img/satellite-icon.png) are
@@ -124,41 +126,3 @@ not vendored art.
    Migration deferred until repo-wide adoption of
    `rgb(from var(--x) r g b / alpha)` syntax. If a base token changes,
    audit those literals by hand.
-3. **Translation pass**: the dish-android alignment added
-   `dashboard.region.pairing` and `debug.stats.http-port` to `lang/en.json`
-   only; the other locales fall back to English until a translator fills them.
-
-## Consolidation history
-
-This file previously defined 34 tokens. The following 15 were deleted in
-favor of the 12-token core schema:
-
-| Removed | Replaced with |
-|---|---|
-| `--text-muted-soft` `#B0B3B8` | `--text-muted` `#6B7280` |
-| `--text-muted-cool` `#9CA3AF` | `--text-muted` `#6B7280` |
-| `--text-bright` `#F1F5F9` | `--text` `#EAEAEA` |
-| `--text-cool-bright` `#94A3B8` | `--text-muted` `#6B7280` |
-| `--text-cool-dim` `#64748B` | `--text-muted` `#6B7280` |
-| `--error-bright` `#EF4444` | `--error` `#E74C3C` |
-| `--error-light` `#F87171` | `--log-error-text` (same hex; scope corrected) |
-| `--bg-log` `#0A0C0F` | `--bg` `#0D0F12` |
-| `--outline-log` `#1E293B` | `--outline` `#222831` |
-| `--log-row-hover` `#1a1f2b` | `--surface` `#161A1F` |
-| `--save-btn-bg` `#1E3A5F` | `--primary-dim` `#A65F1E` |
-| `--save-btn-hover` `#2F5D8C` | `--primary-mid` `#C27A2C` |
-| `--primary-bright` `#FFDA3A` | `--primary` `#FFC107` |
-| `--primary-gradient-end` `#FF9800` | `--primary-dim` `#A65F1E` |
-| `--flow-arrow` `#333` | `--outline` `#222831` |
-
-Additionally:
-- `--primary-dark` renamed to `--primary-dim` to align with the schema.
-- `--warning` value changed from `#FFC107` (aliased primary) to `#F59E0B`,
-  matching dish-android / dish-mac / dish-linux. Warning-context selectors
-  (`.backend-dot.backend-warn`, `.backend-warn-text`, `.flow-step.warn`,
-  `.pipe-stage.pipe-idle`, `.debug-warn`) updated to reference
-  `var(--warning)` instead of `var(--primary)`.
-
-This is a visible change: the orange-amber warning is now distinct from
-the yellow-amber primary. Previously, warning states were indistinguishable
-from primary.

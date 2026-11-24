@@ -52,7 +52,7 @@ struct Loopback {
     SOCKET tx = bindLoopback(txAddr);
 
     Loopback() {
-        const int rcvBuf = 1 << 20;
+        const int rcvBuf = 1048576; // 1 MiB
         setsockopt(rx, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvBuf),
                    sizeof(rcvBuf));
     }

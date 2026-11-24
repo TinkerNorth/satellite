@@ -16,6 +16,7 @@
 #include "../src/adapters/audio/opus_codec.h"
 #include "../src/core/audio/haptic_envelope.h"
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <cassert>
 #include <cmath>
@@ -30,6 +31,9 @@
 #include <unordered_map>
 
 #include "test_util.h"
+#include "core/bits.h"
+
+namespace bits = satellite::bits;
 
 // A DS4/DualSense slot has a touchpad surface; Xbox and Switch Pro do not. The
 // mock mirrors that so a touchpad routed to a non-touchpad slot reads as dropped.
@@ -123,10 +127,11 @@ struct MockViGem : IGamepadPort {
     bool pluginDevice(uint32_t serial, GamepadIdentity identity) override {
         // Split the tally by identity so existing Xbox-vs-DS4 plug-count asserts
         // still read; DualSense/SwitchPro plugs are asserted via identityFor.
-        if (identity == GamepadIdentity::DS4)
+        if (identity == GamepadIdentity::DS4) {
             pluginDS4Calls++;
-        else
+        } else {
             pluginCalls++;
+        }
         lastIdentity = identity;
         identityBySerial[serial] = identity;
         pluggedSerials.push_back(serial);
@@ -160,10 +165,11 @@ struct MockViGem : IGamepadPort {
     bool submitInput(uint32_t serial, const InputReport& input) override {
         // Route the tally by the serial's plugged identity so "XUSB vs DS4"
         // stays observable under the unified submit.
-        if (identityFor(serial) == GamepadIdentity::DS4)
+        if (identityFor(serial) == GamepadIdentity::DS4) {
             submitDS4Calls++;
-        else
+        } else {
             submitCalls++;
+        }
         lastSubmittedReport = input.pad;
         lastSubmittedExtButtons = input.extButtons;
         return submitReturnVal;
@@ -208,44 +214,44 @@ struct MockViGem : IGamepadPort {
         return submitRelativeMouseReturnVal;
     }
     bool supportsRelativeMouse() const override { return supportsRelativeMouseVal; }
-    void setLightbarCallback(LightbarCallback cb) override {
+    void setLightbarCallback(const LightbarCallback& cb) override {
         setLightbarCallbackCalls++;
-        capturedLightbarCb = std::move(cb);
+        capturedLightbarCb = cb;
     }
     void fireLightbar(uint32_t serial, uint8_t r, uint8_t g, uint8_t b) {
         if (capturedLightbarCb) capturedLightbarCb(serial, r, g, b);
     }
-    void setTriggerEffectsCallback(TriggerEffectsCallback cb) override {
+    void setTriggerEffectsCallback(const TriggerEffectsCallback& cb) override {
         setTriggerEffectsCallbackCalls++;
-        capturedTriggerEffectsCb = std::move(cb);
+        capturedTriggerEffectsCb = cb;
     }
     void fireTriggerEffects(uint32_t serial, const TriggerEffectsReport& report) {
         if (capturedTriggerEffectsCb) capturedTriggerEffectsCb(serial, report);
     }
-    void setPlayerLedsCallback(PlayerLedsCallback cb) override {
+    void setPlayerLedsCallback(const PlayerLedsCallback& cb) override {
         setPlayerLedsCallbackCalls++;
-        capturedPlayerLedsCb = std::move(cb);
+        capturedPlayerLedsCb = cb;
     }
     void firePlayerLeds(uint32_t serial, uint8_t mask) {
         if (capturedPlayerLedsCb) capturedPlayerLedsCb(serial, mask);
     }
-    void setSpeakerAudioCallback(SpeakerAudioCallback cb) override {
+    void setSpeakerAudioCallback(const SpeakerAudioCallback& cb) override {
         setSpeakerAudioCallbackCalls++;
-        capturedSpeakerAudioCb = std::move(cb);
+        capturedSpeakerAudioCb = cb;
     }
     void fireSpeakerAudio(uint32_t serial, const int16_t* pcm, size_t frames) {
         if (capturedSpeakerAudioCb) capturedSpeakerAudioCb(serial, pcm, frames);
     }
-    void setHapticAudioCallback(HapticAudioCallback cb) override {
+    void setHapticAudioCallback(const HapticAudioCallback& cb) override {
         setHapticAudioCallbackCalls++;
-        capturedHapticAudioCb = std::move(cb);
+        capturedHapticAudioCb = cb;
     }
     void fireHapticAudio(uint32_t serial, const int16_t* pcm, size_t frames) {
         if (capturedHapticAudioCb) capturedHapticAudioCb(serial, pcm, frames);
     }
-    void setMicLedCallback(MicLedCallback cb) override {
+    void setMicLedCallback(const MicLedCallback& cb) override {
         setMicLedCallbackCalls++;
-        capturedMicLedCb = std::move(cb);
+        capturedMicLedCb = cb;
     }
     void fireMicLed(uint32_t serial, uint8_t state) {
         if (capturedMicLedCb) capturedMicLedCb(serial, state);
@@ -665,7 +671,7 @@ static void test_upsert_idempotent_stableConnectionId_rotatingToken() {
     EXPECT_EQ((int)snap.connections.size(), 1);
     // The old token is dead, the new one routes.
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(!svc.getDecryptInfo(r1.token, key, ctr));
     EXPECT(svc.getDecryptInfo(r2.token, key, ctr));
 }
@@ -785,17 +791,18 @@ static void test_upsert_keyDeriverIsUsed() {
         [](const uint8_t pairingKey[CRYPTO_KEY_SIZE], const uint8_t salt[SESSION_SALT_SIZE],
            uint32_t token, uint8_t out[CRYPTO_KEY_SIZE]) {
             for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
-                out[i] = static_cast<uint8_t>(pairingKey[i] ^ salt[i % 8] ^ (uint8_t)token);
+                out[i] = bits::lowByte(bits::u32(pairingKey[i]) ^ salt[i % 8] ^ (token & 0xFFU));
             }
         });
 
     auto r = upsert(svc);
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(svc.getDecryptInfo(r.token, key, ctr));
     uint8_t expected[CRYPTO_KEY_SIZE];
     for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
-        expected[i] = static_cast<uint8_t>(TEST_KEY[i] ^ r.sessionSalt[i % 8] ^ (uint8_t)r.token);
+        expected[i] =
+            bits::lowByte(bits::u32(TEST_KEY[i]) ^ r.sessionSalt[i % 8] ^ (r.token & 0xFFU));
     }
     EXPECT(std::memcmp(key, expected, CRYPTO_KEY_SIZE) == 0);
     EXPECT(std::memcmp(key, TEST_KEY, CRYPTO_KEY_SIZE) != 0);
@@ -810,7 +817,7 @@ static void test_upsert_defaultDeriverCopiesPairingKey() {
 
     auto r = upsert(svc);
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(svc.getDecryptInfo(r.token, key, ctr));
     EXPECT(std::memcmp(key, TEST_KEY, CRYPTO_KEY_SIZE) == 0);
 }
@@ -827,7 +834,7 @@ static void test_upsert_keyCopiedNotAliased() {
     auto r = svc.upsertSession("dev1", "D", "1.1.1.1", volatileKey, {}, false);
     std::memset(volatileKey, 0xEE, CRYPTO_KEY_SIZE);
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     EXPECT(svc.getDecryptInfo(r.token, key, ctr));
     EXPECT(std::memcmp(key, TEST_KEY, CRYPTO_KEY_SIZE) == 0);
 }
@@ -1054,6 +1061,7 @@ static void test_converge_fullBus_fallsBackToUnplugFirst() {
     SessionService svc(vigem, client, log);
 
     std::vector<ControllerDescriptor> sixteen;
+    sixteen.reserve(16);
     for (int i = 0; i < 16; i++) sixteen.push_back(makeDesc((uint8_t)i, CONTROLLER_TYPE_XBOX));
     upsert(svc, sixteen);
     EXPECT_EQ(svc.availableSlots(), 0);
@@ -1084,14 +1092,16 @@ static void test_converge_capsAndModeChange_noReplug() {
         upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION, CAP_RUMBLE, TOUCHPAD_MODE_OFF)});
     int plugsAfterFirst = vigem.pluginDS4Calls;
     auto r2 = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_PLAYSTATION,
-                                    CAP_RUMBLE | CAP_MOTION | CAP_LIGHTBAR, TOUCHPAD_MODE_DS4)});
+                                    bits::low16(bits::u32(CAP_RUMBLE) | CAP_MOTION | CAP_LIGHTBAR),
+                                    TOUCHPAD_MODE_DS4)});
     EXPECT_EQ(vigem.pluginDS4Calls, plugsAfterFirst); // no replug
     EXPECT_EQ(vigem.unplugCalls, 0);
     EXPECT_EQ((int)r2.controllers[0].result, (int)APPLY_OK);
     EXPECT_EQ(r2.epoch, r1.epoch);
     auto view = svc.getSessionView(r2.connectionId, "dev1");
     EXPECT_EQ((int)view.controllers[0].touchpadMode, (int)TOUCHPAD_MODE_DS4);
-    EXPECT_EQ((int)view.controllers[0].caps, (int)(CAP_RUMBLE | CAP_MOTION | CAP_LIGHTBAR));
+    EXPECT_EQ((int)view.controllers[0].caps,
+              (int)bits::low16(bits::u32(CAP_RUMBLE) | CAP_MOTION | CAP_LIGHTBAR));
 }
 
 static void test_converge_sameDescriptorIsNoOp() {
@@ -1340,6 +1350,7 @@ static uint32_t serialOfPad(const SessionService& svc, size_t position) {
 // Every serial in use, so the next plug takes whichever one comes free.
 static std::vector<ControllerDescriptor> everyPad() {
     std::vector<ControllerDescriptor> pads;
+    pads.reserve(MAX_BACKEND_CONTROLLERS);
     for (int i = 0; i < MAX_BACKEND_CONTROLLERS; i++) pads.push_back(makeDesc((uint8_t)i));
     return pads;
 }
@@ -1369,7 +1380,7 @@ static void test_lostPad_isReadUnderTheTopologyLock() {
     SessionService svc(vigem, client, log);
     std::vector<ControllerDescriptor> pads = everyPad();
     upsert(svc, pads);
-    const uint8_t last = (uint8_t)(MAX_BACKEND_CONTROLLERS - 1);
+    const auto last = (uint8_t)(MAX_BACKEND_CONTROLLERS - 1);
     const uint32_t lost = serialOfPad(svc, last);
     vigem.lostSet.insert(lost);
     std::vector<ControllerDescriptor> withoutIt(pads.begin(), pads.end() - 1);
@@ -2014,7 +2025,7 @@ static void test_fusedHotPath() {
     svc.handleHeartbeat(r.token);
     EXPECT_EQ(client.lastAckAddr, packClientAddr(0x0100007f, 4242));
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     svc.getDecryptInfo(r.token, key, ctr);
     EXPECT_EQ(ctr, (uint32_t)5);
     EXPECT_EQ(vigem.lastSubmittedReport.sThumbLX, (int16_t)7777);
@@ -2056,7 +2067,7 @@ static void test_fusedHotPath_guards() {
     svc.handleHeartbeat(r.token);
     EXPECT_EQ(client.lastAckAddr, packClientAddr(0x0100007f, 1));
     uint8_t key[CRYPTO_KEY_SIZE];
-    uint32_t ctr;
+    uint32_t ctr = 0;
     svc.getDecryptInfo(r.token, key, ctr);
     EXPECT_EQ(ctr, (uint32_t)7);
     EXPECT(!svc.handleGamepadDataAndUpdate(r.token, 8, 0x0100007f, 1, 20, rpt));
@@ -2502,6 +2513,7 @@ static void test_streamCaches_followThePadThroughReplug() {
     const uint32_t movingSerial = info.serial;
     upsert(svc, {});
     std::vector<ControllerDescriptor> everySerial;
+    everySerial.reserve(MAX_BACKEND_CONTROLLERS);
     for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
         everySerial.push_back(
             makeDesc(idx, CONTROLLER_TYPE_PLAYSTATION, CAP_MOTION, TOUCHPAD_MODE_DS4));
@@ -2705,7 +2717,10 @@ static void test_playerLeds_gatedOnCap() {
 
 // An Opus-shaped payload. SAT-1's gates never look inside a packet, so only
 // the length is load-bearing here.
-static std::vector<uint8_t> opusFrame(size_t bytes) { return std::vector<uint8_t>(bytes, 0x5A); }
+static std::vector<uint8_t> opusFrame(size_t bytes) {
+    std::vector<uint8_t> frame(bytes, 0x5A); // a count of copies, not a two-byte list
+    return frame;
+}
 
 // Serials of the slots this connection plugged, by controller index.
 static uint32_t serialOfSlot(SessionService& svc, uint8_t index) {
@@ -3094,7 +3109,8 @@ static void test_speakerAudio_exactSilenceIsNotSent() {
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const uint32_t serial0 = serialOfSlot(svc, 0);
 
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS, 0);
     for (int i = 0; i < 50; i++) {
         EXPECT(svc.handleSpeakerAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     }
@@ -3305,7 +3321,7 @@ struct MicPacketSource {
         frameIndex++;
         uint8_t buf[1024];
         const size_t n = enc->encode(src.data(), AUDIO_FRAME_SAMPLES, buf, sizeof(buf));
-        return std::vector<uint8_t>(buf, buf + n);
+        return {buf, buf + n};
     }
 };
 
@@ -3399,7 +3415,7 @@ static void test_micAudio_decodesRealPacketsToTheBackend() {
     // dropped at the decoder, no PCM.
     const auto base = mic.next();
     std::vector<uint8_t> twoFrames;
-    twoFrames.push_back((uint8_t)((base[0] & 0xFC) | 0x01));
+    twoFrames.push_back((uint8_t)((base[0] & 0xFCU) | 0x01U));
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     twoFrames.insert(twoFrames.end(), base.begin() + 1, base.end());
     const int before = vigem.submitMicAudioCalls;
@@ -3437,6 +3453,7 @@ static void test_micAudio_gapConcealedAndReorderHealed() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     MicPacketSource mic;
     std::vector<std::vector<uint8_t>> pkts;
+    pkts.reserve(12);
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
@@ -3511,7 +3528,7 @@ static void test_micAudio_seqWrapsMidStream() {
     // and reading 0x0000 as ancient would silence the stream from there on.
     for (int i = 0; i < 6; i++) {
         svc.resetMicRateWindowForTest(r.token, 0);
-        const uint16_t seq = (uint16_t)(0xFFFD + i);
+        const auto seq = (uint16_t)(0xFFFD + i);
         const auto pkt = mic.next();
         EXPECT(deliverMic(svc, r.token, 0, seq, pkt.data(), pkt.size()));
         EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
@@ -3722,6 +3739,7 @@ static void test_audioCounts_trackTheMicStream() {
     auto r = upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_MIC)});
     MicPacketSource mic;
     std::vector<std::vector<uint8_t>> pkts;
+    pkts.reserve(12);
     for (int i = 0; i < 12; i++) pkts.push_back(mic.next());
 
     for (int i = 0; i < 4; i++) {
@@ -3771,7 +3789,8 @@ static void test_audioCounts_separateSuppressedSilenceFromSentFrames() {
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const uint32_t serial0 = serialOfSlot(svc, 0);
 
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS, 0);
     for (int i = 0; i < 50; i++) {
         EXPECT(svc.handleSpeakerAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     }
@@ -3816,7 +3835,7 @@ static void test_speakerAudio_oneWindowBecomesOneWirePacket() {
     auto dec = satellite::audio::OpusStreamDecoder::create(satellite::audio::Stream::Speaker);
     EXPECT(dec != nullptr);
     if (!dec) return;
-    std::vector<int16_t> out(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    std::vector<int16_t> out(static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS, 0);
     EXPECT_EQ(dec->decode(client.lastSpeakerAudioOpus.data(), client.lastSpeakerAudioOpus.size(),
                           out.data(), AUDIO_FRAME_SAMPLES),
               (size_t)AUDIO_FRAME_SAMPLES);
@@ -3847,7 +3866,7 @@ static void test_speakerAudio_partialBatchesBuffer() {
     EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
 
     // Two and a half windows: two packets out, half a window carried forward.
-    const size_t batch = AUDIO_FRAME_SAMPLES * 2 + half;
+    const size_t batch = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * 2 + half;
     const auto big = speakerPcm(batch, 2);
     EXPECT(svc.handleSpeakerAudioFromBackend(serial0, big.data(), batch));
     EXPECT_EQ(client.speakerAudioCalls, 3);
@@ -4016,7 +4035,8 @@ static void test_hapticAudio_waveformToCapableSender() {
     EXPECT_EQ(client.hapticAudioCalls, 2);
 
     TEST("haptic audio: exact silence is suppressed and burns no seq");
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
     for (int i = 0; i < 20; i++) {
         EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     }
@@ -4030,8 +4050,8 @@ static void test_hapticAudio_waveformToCapableSender() {
     // haptic lane keeps counting from where it was while the speaker lane
     // starts from zero.
     const auto spk = speakerPcm(AUDIO_FRAME_SAMPLES, 0);
-    upsert(svc,
-           {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_HAPTIC_AUDIO | CAP_SPEAKER | CAP_RUMBLE)});
+    upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE,
+                          bits::low16(bits::u32(CAP_HAPTIC_AUDIO) | CAP_SPEAKER | CAP_RUMBLE))});
     const uint32_t serial0b = serialOfSlot(svc, 0);
     EXPECT_EQ(serial0b, serial0);
     for (int i = 0; i < 3; i++) {
@@ -4068,7 +4088,8 @@ static void test_hapticAudio_reducedToRumbleForMotorSenders() {
     EXPECT_EQ(client.lastRumble.durationMs, satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS);
 
     TEST("haptic audio: silence reduces to a stop, once");
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
     EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     EXPECT_EQ(client.rumbleCalls, 2);
     EXPECT_EQ((int)client.lastRumble.strongMagnitude, 0);
@@ -4133,7 +4154,8 @@ static void test_hapticAudio_reductionReWindowsPartialBatches() {
         const auto w = hapticPcm(AUDIO_FRAME_SAMPLES, 4000.0, 4000.0, 0);
         three.insert(three.end(), w.begin(), w.end());
     }
-    EXPECT(svc.handleHapticAudioFromBackend(serial0, three.data(), 3 * AUDIO_FRAME_SAMPLES));
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, three.data(),
+                                            3 * static_cast<size_t>(AUDIO_FRAME_SAMPLES)));
     EXPECT_EQ(client.rumbleCalls, 2);
 }
 
@@ -4167,7 +4189,8 @@ static void test_hapticAudio_mixesWithHidRumbleByMax() {
     EXPECT_EQ(client.lastRumble.durationMs, RUMBLE_WIRE_DURATION_MS);
 
     // The burst ends: back to exactly the HID level, in one packet.
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
     EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     EXPECT_EQ(client.rumbleCalls, 3);
     EXPECT_EQ((int)client.lastRumble.strongMagnitude, 30000);
@@ -4244,7 +4267,8 @@ static void test_hapticAudio_countersTrackBothRenderings() {
     const uint32_t serial0 = serialOfSlot(svc, 0);
     const uint32_t serial1 = serialOfSlot(svc, 1);
     const auto pcm = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
 
     for (int i = 0; i < 4; i++) {
         EXPECT(svc.handleHapticAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));
@@ -4420,6 +4444,7 @@ static void test_audioLanes_followASerialToItsNextSession() {
 
     TEST("audio lanes: the new owner gets the serial's audio with none of the old lane's state");
     std::vector<ControllerDescriptor> everySerial;
+    everySerial.reserve(MAX_BACKEND_CONTROLLERS);
     for (uint8_t idx = 0; idx < MAX_BACKEND_CONTROLLERS; idx++) {
         everySerial.push_back(makeDesc(idx, CONTROLLER_TYPE_DUALSENSE, caps));
     }
@@ -4599,7 +4624,7 @@ static void test_feedback_replugResetsCoalesce() {
     MockLog log;
     SessionService svc(vigem, client, log);
 
-    const uint16_t caps = CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+    const uint16_t caps = bits::low16(bits::u32(CAP_TRIGGER_EFFECTS) | CAP_PLAYER_LEDS | CAP_MIC);
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, caps)});
     uint32_t serial = vigem.pluggedSerials.back();
     const TriggerEffectsReport fx = makeTriggerEffects(0x21, 0x26);
@@ -4668,7 +4693,7 @@ static void test_backendCallbacks_waitForTheServiceLockAndDeliver() {
 static constexpr uint32_t CLIENT_IPV4_NBO = 0x0100007f;
 static constexpr uint16_t CLIENT_PORT = 5555;
 static constexpr uint16_t ALL_STATE_CAPS =
-    CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+    bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC);
 
 // One DualSense slot whose game set every feedback state while the first
 // session's client was reachable, so each state reached it once.
@@ -4837,8 +4862,10 @@ static void test_feedbackState_aCapTheRePutDroppedIsNotResent() {
     EXPECT_EQ(pad.client.playerLedsCalls, 1);
 }
 
-static constexpr uint16_t CAPS_WITHOUT_TRIGGER_EFFECTS = CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_MIC;
-static constexpr uint16_t CAPS_WITHOUT_PLAYER_LEDS = CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_MIC;
+static constexpr uint16_t CAPS_WITHOUT_TRIGGER_EFFECTS =
+    bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_PLAYER_LEDS | CAP_MIC);
+static constexpr uint16_t CAPS_WITHOUT_PLAYER_LEDS =
+    bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_TRIGGER_EFFECTS | CAP_MIC);
 
 static void test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStayAway() {
     TEST("rotate: a re-PUT without the trigger-effects cap keeps only the trigger effects away");
@@ -4866,7 +4893,8 @@ static void test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway() {
     EXPECT_EQ(pad.client.deliveredTriggerEffects, 2);
 }
 
-static constexpr uint16_t CAPS_WITHOUT_LIGHTBAR = CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS | CAP_MIC;
+static constexpr uint16_t CAPS_WITHOUT_LIGHTBAR =
+    bits::low16(bits::u32(CAP_TRIGGER_EFFECTS) | CAP_PLAYER_LEDS | CAP_MIC);
 
 static void test_feedbackState_aCapTheRePutAddedBringsTheStateSetWhileItWasOff() {
     TEST("rotate: a cap the re-PUT added brings the state the game set while it was off");
@@ -5045,14 +5073,14 @@ static void test_capabilityBits() {
     EXPECT(c.micCapable());
     EXPECT(c.speakerCapable());
     // Neighbouring caps must not bleed into the audio accessors.
-    c.caps = CAP_LIGHTBAR | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS;
+    c.caps = bits::low16(bits::u32(CAP_LIGHTBAR) | CAP_TRIGGER_EFFECTS | CAP_PLAYER_LEDS);
     EXPECT(!c.micCapable());
     EXPECT(!c.speakerCapable());
 
     // The mic-mute button is the one free bit in the XINPUT-shaped word; it
     // must not collide with Guide (0x0400), which the identity encoders map.
     // A compile-time invariant, so it fails the build rather than a test run.
-    static_assert((WBUTTON_MIC_MUTE & 0x0400) == 0,
+    static_assert((WBUTTON_MIC_MUTE & 0x0400U) == 0,
                   "WBUTTON_MIC_MUTE must not collide with the XUSB Guide bit");
     EXPECT_EQ((int)WBUTTON_MIC_MUTE, 0x0800);
     GamepadReport g;
@@ -5584,6 +5612,7 @@ static void test_rumble_retiredSerialDiscardsPendingState() {
     TEST("rumble: retired controller notifications never reach its replacement");
     ContendedRumbleFixture f;
     std::vector<ControllerDescriptor> occupied;
+    occupied.reserve(MAX_BACKEND_CONTROLLERS - 1);
     for (uint8_t slot = 0; slot < MAX_BACKEND_CONTROLLERS - 1; slot++) {
         occupied.push_back(makeDesc(slot));
     }
@@ -5621,7 +5650,7 @@ struct RumbleDuringPlug {
     RumbleDuringPlug() { svc.updatePostDecryptV4(session.token, 1, CLIENT_IPV4_NBO, CLIENT_PORT); }
 
     void writeWhilePlugging(std::vector<RumbleReport> writes) {
-        vigem.onPlugged = [this, writes](uint32_t serial) {
+        vigem.onPlugged = [this, writes = std::move(writes)](uint32_t serial) {
             for (const RumbleReport& report : writes) vigem.fireRumble(serial, report);
         };
     }
@@ -5759,8 +5788,8 @@ using satellite::FEEDBACK_LANES;
 using satellite::FeedbackLane;
 using satellite::FeedbackTestPlan;
 
-static const uint16_t ALL_FEEDBACK_CAPS =
-    CAP_RUMBLE | CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_TRIGGER_EFFECTS | CAP_MIC;
+static const uint16_t ALL_FEEDBACK_CAPS = bits::low16(
+    bits::u32(CAP_RUMBLE) | CAP_LIGHTBAR | CAP_PLAYER_LEDS | CAP_TRIGGER_EFFECTS | CAP_MIC);
 
 static std::vector<FeedbackLane> everyLane() {
     std::vector<FeedbackLane> lanes;
@@ -6312,244 +6341,236 @@ static void test_uptime_countsFromConstruction() {
 }
 
 int main() {
-    test_feedbackTest_plan();
-    test_feedbackTest_names_and_bytes();
-    test_feedbackTest_parseLanes();
-    test_testController_sendsClaimedLanes();
-    test_testController_unknownTargets();
-    test_testController_leavesGameStateAlone();
-    test_testController_givesTheGameStateBack();
-    test_testController_gameRewriteDuringTheHold();
-    test_testController_untouchedSurfacesGoIdle();
-    test_testController_leavesTheMicLampAlone();
-    test_testController_gameLampDuringTheHoldGoesOut();
-    test_sessionLogLines_carryTheConnectionId();
-    test_lastGameOutput_recordsEachKind();
-    test_gameOutput_countsEveryLaneWithItsLastValue();
-    test_input_countsFramesPerPadAndSamplesARate();
-    test_snapshot_requestedTypeCompositeAndPlugTime();
-    test_uptime_countsFromConstruction();
-    test_pointer_closeReleasesButtons();
-    test_pointer_timeoutReleasesButtons();
-    test_pointer_shutdownReleasesButtons();
-    test_pointer_removeReleasesButtons();
-    test_pointer_modesReleaseButtons();
-    test_pointer_grantRevocationReleasesButtons();
-    test_pointer_rotationReanchorsGesture();
-    test_pointer_omittedSlotReleasesButtons();
-    test_pointer_rejectedReplugPreservesOwnership();
-    test_pointer_sharedOwnershipSurvivesRelease();
-    test_pointer_twoSlotsOwnButtonsIndependently();
-    test_pointer_replugReleasesButtons();
-    test_pointer_failedReleaseRetriesDuringMaintenance();
-    test_pointer_framesInjectInOrderOnThePointerThread();
-    test_maintenance_driverRecheckReachesTheBackend();
-    test_pointer_refusedFrameRetriesDuringMaintenance();
-    test_pointer_nothingButThePointerThreadInjects();
-    test_receivePath_mouseFramesNeverWaitForTheServiceLock();
-    test_rumble_stopSurvivesContention();
-    test_rumble_latestNotificationWins();
-    test_rumble_retiredSerialDiscardsPendingState();
-    test_rumble_contendedDurationIsPreserved();
-    test_rumble_betweenPlugAndPublishReachesTheClientAtPublish();
-    test_rumble_newestLevelBeforePublishWins();
-    test_rumble_stopBeforePublishForwardsNothing();
-    test_rumble_levelCarriedAcrossPublishIsHeldRumble();
-    test_rumble_betweenPlugAndPublishOfAReplugReachesTheClient();
-    test_rumble_betweenPlugAndPublishOfAFreshSessionIsRefreshedOnceReachable();
-    test_rumble_levelCarriedAcrossARekeyIsSentOnlyOnceTheSlotHoldsTheNewToken();
-    test_rumble_levelOnAFreeSerialIsNotInherited();
-    test_upsert_createsSession();
-    test_upsert_connectionIdIsConnAndEightHexDigits();
-    test_upsert_recordsProtocolVersion();
-    test_upsert_zeroControllerSessionIsValid();
-    test_upsert_idempotent_stableConnectionId_rotatingToken();
-    test_upsert_rotation_notifiesOldTokenReplaced();
-    test_upsert_saltAndCounterRotate();
-    test_replay_seenFlagStartsClear();
-    test_replay_counterZeroMarksSeen();
-    test_replay_gamepadPathMarksSeen();
-    test_replay_rotationClearsSeen();
-    test_upsert_keyDeriverIsUsed();
-    test_upsert_defaultDeriverCopiesPairingKey();
-    test_upsert_keyCopiedNotAliased();
-    test_upsert_firstPlugCarriesFinalType();
-    test_upsert_convergeRemovesAbsentSlots();
-    test_upsert_convergeToZeroKeepsSession();
-    test_upsert_addsNewSlots();
-    test_upsert_duplicateIdxLastWins();
-    test_upsert_invalidTypeReported();
-    test_upsert_invalidIndexReported();
-    test_upsert_backendUnavailable();
-    test_upsert_pluginFailReleasesSerial();
-    test_upsert_noSlots();
-    test_upsert_partialSuccess();
+    return satellite::test::runMain("test_session_service", [] {
+        test_feedbackTest_plan();
+        test_feedbackTest_names_and_bytes();
+        test_feedbackTest_parseLanes();
+        test_testController_sendsClaimedLanes();
+        test_testController_unknownTargets();
+        test_testController_leavesGameStateAlone();
+        test_testController_givesTheGameStateBack();
+        test_testController_gameRewriteDuringTheHold();
+        test_testController_untouchedSurfacesGoIdle();
+        test_testController_leavesTheMicLampAlone();
+        test_testController_gameLampDuringTheHoldGoesOut();
+        test_sessionLogLines_carryTheConnectionId();
+        test_lastGameOutput_recordsEachKind();
+        test_gameOutput_countsEveryLaneWithItsLastValue();
+        test_input_countsFramesPerPadAndSamplesARate();
+        test_snapshot_requestedTypeCompositeAndPlugTime();
+        test_uptime_countsFromConstruction();
+        test_pointer_closeReleasesButtons();
+        test_pointer_timeoutReleasesButtons();
+        test_pointer_shutdownReleasesButtons();
+        test_pointer_removeReleasesButtons();
+        test_pointer_modesReleaseButtons();
+        test_pointer_grantRevocationReleasesButtons();
+        test_pointer_rotationReanchorsGesture();
+        test_pointer_omittedSlotReleasesButtons();
+        test_pointer_rejectedReplugPreservesOwnership();
+        test_pointer_sharedOwnershipSurvivesRelease();
+        test_pointer_twoSlotsOwnButtonsIndependently();
+        test_pointer_replugReleasesButtons();
+        test_pointer_failedReleaseRetriesDuringMaintenance();
+        test_pointer_framesInjectInOrderOnThePointerThread();
+        test_maintenance_driverRecheckReachesTheBackend();
+        test_pointer_refusedFrameRetriesDuringMaintenance();
+        test_pointer_nothingButThePointerThreadInjects();
+        test_receivePath_mouseFramesNeverWaitForTheServiceLock();
+        test_rumble_stopSurvivesContention();
+        test_rumble_latestNotificationWins();
+        test_rumble_retiredSerialDiscardsPendingState();
+        test_rumble_contendedDurationIsPreserved();
+        test_rumble_betweenPlugAndPublishReachesTheClientAtPublish();
+        test_rumble_newestLevelBeforePublishWins();
+        test_rumble_stopBeforePublishForwardsNothing();
+        test_rumble_levelCarriedAcrossPublishIsHeldRumble();
+        test_rumble_betweenPlugAndPublishOfAReplugReachesTheClient();
+        test_rumble_betweenPlugAndPublishOfAFreshSessionIsRefreshedOnceReachable();
+        test_rumble_levelCarriedAcrossARekeyIsSentOnlyOnceTheSlotHoldsTheNewToken();
+        test_rumble_levelOnAFreeSerialIsNotInherited();
+        test_upsert_createsSession();
+        test_upsert_connectionIdIsConnAndEightHexDigits();
+        test_upsert_recordsProtocolVersion();
+        test_upsert_zeroControllerSessionIsValid();
+        test_upsert_idempotent_stableConnectionId_rotatingToken();
+        test_upsert_rotation_notifiesOldTokenReplaced();
+        test_upsert_saltAndCounterRotate();
+        test_replay_seenFlagStartsClear();
+        test_replay_counterZeroMarksSeen();
+        test_replay_gamepadPathMarksSeen();
+        test_replay_rotationClearsSeen();
+        test_upsert_keyDeriverIsUsed();
+        test_upsert_defaultDeriverCopiesPairingKey();
+        test_upsert_keyCopiedNotAliased();
+        test_upsert_firstPlugCarriesFinalType();
+        test_upsert_convergeRemovesAbsentSlots();
+        test_upsert_convergeToZeroKeepsSession();
+        test_upsert_addsNewSlots();
+        test_upsert_duplicateIdxLastWins();
+        test_upsert_invalidTypeReported();
+        test_upsert_invalidIndexReported();
+        test_upsert_backendUnavailable();
+        test_upsert_pluginFailReleasesSerial();
+        test_upsert_noSlots();
+        test_upsert_partialSuccess();
 
-    test_converge_typeFamilyChange_transactionalReplug();
-    test_converge_replugFailure_keepsOldPad();
-    test_converge_fullBus_fallsBackToUnplugFirst();
-    test_converge_capsAndModeChange_noReplug();
-    test_converge_sameDescriptorIsNoOp();
+        test_converge_typeFamilyChange_transactionalReplug();
+        test_converge_replugFailure_keepsOldPad();
+        test_converge_fullBus_fallsBackToUnplugFirst();
+        test_converge_capsAndModeChange_noReplug();
+        test_converge_sameDescriptorIsNoOp();
 
-    test_upsert_dualSensePlugsWithDualSenseIdentity();
-    test_upsert_dualSenseEdgePlugsItsOwnIdentity();
-    test_converge_dualSenseToEdgeReplugs();
-    test_upsert_switchProPlugsMotionNoTouchpad();
-    test_converge_identityChangeReplugs_capsOnlyDoesNot();
-    test_apply_unsupportedIdentityRejectedPriorPadIntact();
+        test_upsert_dualSensePlugsWithDualSenseIdentity();
+        test_upsert_dualSenseEdgePlugsItsOwnIdentity();
+        test_converge_dualSenseToEdgeReplugs();
+        test_upsert_switchProPlugsMotionNoTouchpad();
+        test_converge_identityChangeReplugs_capsOnlyDoesNot();
+        test_apply_unsupportedIdentityRejectedPriorPadIntact();
 
-    test_epoch_bumpsOnTopologyChanges();
-    test_epoch_bumpsOnFailedReplug();
-    test_heartbeat_enrichedAck();
-    test_heartbeat_invalidTokenIsNoOp();
-    test_heartbeat_reflectsInvoluntaryLoss();
-    test_lostPad_isUnpluggedAndItsSlotVacated();
-    test_lostPad_unconfirmedUnplugQuarantinesTheSerial();
-    test_lostPad_aSerialNoSessionHoldsChangesNothing();
-    test_disabledPad_keepsItsSlotAndShowsDisabled();
+        test_epoch_bumpsOnTopologyChanges();
+        test_epoch_bumpsOnFailedReplug();
+        test_heartbeat_enrichedAck();
+        test_heartbeat_invalidTokenIsNoOp();
+        test_heartbeat_reflectsInvoluntaryLoss();
+        test_lostPad_isUnpluggedAndItsSlotVacated();
+        test_lostPad_unconfirmedUnplugQuarantinesTheSerial();
+        test_lostPad_aSerialNoSessionHoldsChangesNothing();
+        test_disabledPad_keepsItsSlotAndShowsDisabled();
 
-    test_applyController_standalone();
-    test_applyController_scopedToOwner();
-    test_removeController_slotOnly();
-    test_sessionView_scopedAndComplete();
+        test_applyController_standalone();
+        test_applyController_scopedToOwner();
+        test_removeController_slotOnly();
+        test_sessionView_scopedAndComplete();
 
-    test_mouseControl_grantedWhenSupported();
-    test_mouseControl_deniedWhenUnsupported();
-    test_mouseControl_notRequestedNotGranted();
-    test_touchpad_mouseStreamDroppedWithoutGrant();
-    test_mouseControl_rePutWithoutRequestRevokes();
-    test_touchpad_refusedInjectionCountedAndLoggedOncePerRun();
-    test_touchpad_idleFramesDoNotTouchTheRefusalRun();
+        test_mouseControl_grantedWhenSupported();
+        test_mouseControl_deniedWhenUnsupported();
+        test_mouseControl_notRequestedNotGranted();
+        test_touchpad_mouseStreamDroppedWithoutGrant();
+        test_mouseControl_rePutWithoutRequestRevokes();
+        test_touchpad_refusedInjectionCountedAndLoggedOncePerRun();
+        test_touchpad_idleFramesDoNotTouchTheRefusalRun();
 
-    test_serials_roundRobinAvoidsInstantReuse();
-    test_serials_quarantineOnUnplugFailure();
-    test_serials_settledByTheBackendLeaveQuarantine();
-    test_lostPad_isReadUnderTheTopologyLock();
-    test_lostPad_nothingLostTakesNoLock();
+        test_serials_roundRobinAvoidsInstantReuse();
+        test_serials_quarantineOnUnplugFailure();
+        test_serials_settledByTheBackendLeaveQuarantine();
+        test_lostPad_isReadUnderTheTopologyLock();
+        test_lostPad_nothingLostTakesNoLock();
 
-    test_closeById_kick_notifiesBeforeTeardown();
-    test_closeById_clientCloseNoNotify();
-    test_closeById_scopeAndNotFound();
-    test_closeForDevice_unpairClosesLiveSession();
-    test_closeAll_broadcastsShutdownFirst();
+        test_closeById_kick_notifiesBeforeTeardown();
+        test_closeById_clientCloseNoNotify();
+        test_closeById_scopeAndNotFound();
+        test_closeForDevice_unpairClosesLiveSession();
+        test_closeAll_broadcastsShutdownFirst();
 
-    test_reap_honoursRestGraceWindow();
-    test_reap_firesAfterGraceExpires();
-    test_reap_recentPacketsKeepAlive();
-    test_linkState_graceCountsAsActive();
-    test_snapshot_notRespondingState();
-    test_reap_logsASilentLinkOnceBeforeReaping();
-    test_reap_inGraceSilenceIsNotLogged();
+        test_reap_honoursRestGraceWindow();
+        test_reap_firesAfterGraceExpires();
+        test_reap_recentPacketsKeepAlive();
+        test_linkState_graceCountsAsActive();
+        test_snapshot_notRespondingState();
+        test_reap_logsASilentLinkOnceBeforeReaping();
+        test_reap_inGraceSilenceIsNotLogged();
 
-    test_snapshot_pluggedInFromAdapterTruth();
-    test_snapshot_carriesIdentityAndEpoch();
+        test_snapshot_pluggedInFromAdapterTruth();
+        test_snapshot_carriesIdentityAndEpoch();
 
-    test_gamepadData_routesByType();
-    test_gamepadData_guards();
-    test_fusedHotPath();
-    test_gamepadData_carriesExtendedButtons();
-    test_fusedHotPath_guards();
-    test_motionData_cachedAndForwarded();
-    test_motionData_acceptedWithoutCapAndCachedOnDecline();
-    test_battery_validation();
-    test_touchpad_ds4ModeRoutesToPad();
-    test_touchpad_offModeCachesOnly();
-    test_touchpad_mouseMode_deltaAndAnchoring();
-    test_touchpad_mouseMode_dtScaling();
-    test_touchpad_mouseMode_duplicateTimestampNoMotion();
-    test_touchpad_mouseMode_gapReanchors();
-    test_touchpad_mouseMode_buttonLevel();
-    test_touchpad_mouseMode_clickWithoutTouch();
-    test_touchpad_mouseMode_extendedButtonsAndWheel();
-    test_touchpad_mouseMode_wheelDuplicateSuppressed();
-    test_touchpad_mouseMode_subPixelRemainder();
-    test_replug_resetsStreamCaches();
-    test_streamCaches_followThePadThroughReplug();
-    test_streamCaches_survivePadUpdatesTheyDoNotDependOn();
-    test_receivePath_streamsNeverWaitForTheServiceLock();
-    test_receivePath_heartbeatNeverWaitsForTheServiceLock();
-    test_heartbeat_publishedAckFollowsEveryTopologyChange();
-    test_rumble_forwardsAndCoalesces();
-    test_lightbar_gatedOnCap();
-    test_triggerEffects_gatedOnCap();
-    test_playerLeds_gatedOnCap();
-    test_micAudio_gatedOnCap();
-    test_micAudio_unknownControllerAndToken();
-    test_micAudio_rateLimitIsPerController();
-    test_micAudio_replugRestoresAllowance();
-    test_micAudio_dropLoggedOncePerSessionPerCause();
-    test_micLed_gatedOnCapAndCoalesced();
-    test_speakerAudio_gatedOnCap();
-    test_speakerAudio_exactSilenceIsNotSent();
-    test_speakerAudio_anythingAudibleStillGoes();
-    test_audioPolicy_defaultsToBothOn();
-    test_audioPolicy_speakerOffStopsTheStream();
-    test_audioPolicy_micOffDropsWithAReason();
-    test_audioPolicy_directionsAreIndependent();
-    test_micAudio_decodesRealPacketsToTheBackend();
-    test_micAudio_aPadThatReadsAsGoneIsNotAMissingMicrophone();
-    test_micAudio_aDisabledPadIsNotAMissingMicrophone();
-    test_micAudio_withoutCodecAcceptsAndDrops();
-    test_micAudio_gapConcealedAndReorderHealed();
-    test_micAudio_streamsPastTheRateWindow();
-    test_micAudio_seqWrapsMidStream();
-    test_micAudio_codecStateIsPerControllerAndDiesWithThePad();
-    test_micAudio_unboundSlotSubmitsNothing();
-    test_micAudio_decodesOnTheMicWorker();
-    test_micAudio_decoderFollowsThePlugGeneration();
-    test_receivePath_micFramesNeverWaitForTheServiceLock();
-    test_speakerAudio_oneWindowBecomesOneWirePacket();
-    test_speakerAudio_partialBatchesBuffer();
-    test_speakerAudio_seqIsPerControllerAndWraps();
-    test_speakerAudio_encoderStateDiesWithThePad();
-    test_speakerAudio_withoutCodecSendsNothing();
-    test_hapticAudio_waveformToCapableSender();
-    test_hapticAudio_reducedToRumbleForMotorSenders();
-    test_hapticAudio_reductionReWindowsPartialBatches();
-    test_hapticAudio_mixesWithHidRumbleByMax();
-    test_hapticAudio_policyOffStopsBothRenderings();
-    test_hapticAudio_countersTrackBothRenderings();
-    test_audioLanes_encodeOutsideTheServiceLock();
-    test_audioLanes_neverDropForTheServiceLock();
-    test_audioLanes_followASerialToItsNextSession();
-    test_rumble_heldLevelIsRefreshedBeforeTheClientStops();
-    test_rumble_coalesceNeverOutlivesTheClientsCommand();
-    test_rumble_hapticStreamThatEndsIsStoppedByTheHost();
-    test_audioCounts_trackTheMicStream();
-    test_audioCounts_separateSuppressedSilenceFromSentFrames();
-    test_audioBackendCallbacks_neverDropUnderTheServiceLock();
-    test_feedback_replugResetsCoalesce();
-    test_backendCallbacks_waitForTheServiceLockAndDeliver();
-    test_feedbackState_rotatedSessionGetsTheLightbarAgain();
-    test_feedbackState_rotatedSessionGetsTriggerEffectsAndPlayerLedsAgain();
-    test_feedbackState_micLampIsNotReplayedSinceItAlsoMutesTheMicrophone();
-    test_feedbackState_rumbleIsNotReplayed();
-    test_feedbackState_freshSessionGetsWhatWasSetBeforeItsFirstDatagram();
-    test_feedbackState_onlyTheFirstDatagramResends();
-    test_feedbackState_firstDatagramCarryingInputResends();
-    test_feedbackState_firstDatagramByStringAddressResends();
-    test_feedbackState_aCapTheRePutDroppedIsNotResent();
-    test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStayAway();
-    test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway();
-    test_feedbackState_aCapTheRePutAddedBringsTheStateSetWhileItWasOff();
-    test_feedbackState_aPadTheRePutRepluggedHasNothingToResend();
-    test_feedbackState_aSlotTheRePutDroppedIsNotResent();
+        test_gamepadData_routesByType();
+        test_gamepadData_guards();
+        test_fusedHotPath();
+        test_gamepadData_carriesExtendedButtons();
+        test_fusedHotPath_guards();
+        test_motionData_cachedAndForwarded();
+        test_motionData_acceptedWithoutCapAndCachedOnDecline();
+        test_battery_validation();
+        test_touchpad_ds4ModeRoutesToPad();
+        test_touchpad_offModeCachesOnly();
+        test_touchpad_mouseMode_deltaAndAnchoring();
+        test_touchpad_mouseMode_dtScaling();
+        test_touchpad_mouseMode_duplicateTimestampNoMotion();
+        test_touchpad_mouseMode_gapReanchors();
+        test_touchpad_mouseMode_buttonLevel();
+        test_touchpad_mouseMode_clickWithoutTouch();
+        test_touchpad_mouseMode_extendedButtonsAndWheel();
+        test_touchpad_mouseMode_wheelDuplicateSuppressed();
+        test_touchpad_mouseMode_subPixelRemainder();
+        test_replug_resetsStreamCaches();
+        test_streamCaches_followThePadThroughReplug();
+        test_streamCaches_survivePadUpdatesTheyDoNotDependOn();
+        test_receivePath_streamsNeverWaitForTheServiceLock();
+        test_receivePath_heartbeatNeverWaitsForTheServiceLock();
+        test_heartbeat_publishedAckFollowsEveryTopologyChange();
+        test_rumble_forwardsAndCoalesces();
+        test_lightbar_gatedOnCap();
+        test_triggerEffects_gatedOnCap();
+        test_playerLeds_gatedOnCap();
+        test_micAudio_gatedOnCap();
+        test_micAudio_unknownControllerAndToken();
+        test_micAudio_rateLimitIsPerController();
+        test_micAudio_replugRestoresAllowance();
+        test_micAudio_dropLoggedOncePerSessionPerCause();
+        test_micLed_gatedOnCapAndCoalesced();
+        test_speakerAudio_gatedOnCap();
+        test_speakerAudio_exactSilenceIsNotSent();
+        test_speakerAudio_anythingAudibleStillGoes();
+        test_audioPolicy_defaultsToBothOn();
+        test_audioPolicy_speakerOffStopsTheStream();
+        test_audioPolicy_micOffDropsWithAReason();
+        test_audioPolicy_directionsAreIndependent();
+        test_micAudio_decodesRealPacketsToTheBackend();
+        test_micAudio_aPadThatReadsAsGoneIsNotAMissingMicrophone();
+        test_micAudio_aDisabledPadIsNotAMissingMicrophone();
+        test_micAudio_withoutCodecAcceptsAndDrops();
+        test_micAudio_gapConcealedAndReorderHealed();
+        test_micAudio_streamsPastTheRateWindow();
+        test_micAudio_seqWrapsMidStream();
+        test_micAudio_codecStateIsPerControllerAndDiesWithThePad();
+        test_micAudio_unboundSlotSubmitsNothing();
+        test_micAudio_decodesOnTheMicWorker();
+        test_micAudio_decoderFollowsThePlugGeneration();
+        test_receivePath_micFramesNeverWaitForTheServiceLock();
+        test_speakerAudio_oneWindowBecomesOneWirePacket();
+        test_speakerAudio_partialBatchesBuffer();
+        test_speakerAudio_seqIsPerControllerAndWraps();
+        test_speakerAudio_encoderStateDiesWithThePad();
+        test_speakerAudio_withoutCodecSendsNothing();
+        test_hapticAudio_waveformToCapableSender();
+        test_hapticAudio_reducedToRumbleForMotorSenders();
+        test_hapticAudio_reductionReWindowsPartialBatches();
+        test_hapticAudio_mixesWithHidRumbleByMax();
+        test_hapticAudio_policyOffStopsBothRenderings();
+        test_hapticAudio_countersTrackBothRenderings();
+        test_audioLanes_encodeOutsideTheServiceLock();
+        test_audioLanes_neverDropForTheServiceLock();
+        test_audioLanes_followASerialToItsNextSession();
+        test_rumble_heldLevelIsRefreshedBeforeTheClientStops();
+        test_rumble_coalesceNeverOutlivesTheClientsCommand();
+        test_rumble_hapticStreamThatEndsIsStoppedByTheHost();
+        test_audioCounts_trackTheMicStream();
+        test_audioCounts_separateSuppressedSilenceFromSentFrames();
+        test_audioBackendCallbacks_neverDropUnderTheServiceLock();
+        test_feedback_replugResetsCoalesce();
+        test_backendCallbacks_waitForTheServiceLockAndDeliver();
+        test_feedbackState_rotatedSessionGetsTheLightbarAgain();
+        test_feedbackState_rotatedSessionGetsTriggerEffectsAndPlayerLedsAgain();
+        test_feedbackState_micLampIsNotReplayedSinceItAlsoMutesTheMicrophone();
+        test_feedbackState_rumbleIsNotReplayed();
+        test_feedbackState_freshSessionGetsWhatWasSetBeforeItsFirstDatagram();
+        test_feedbackState_onlyTheFirstDatagramResends();
+        test_feedbackState_firstDatagramCarryingInputResends();
+        test_feedbackState_firstDatagramByStringAddressResends();
+        test_feedbackState_aCapTheRePutDroppedIsNotResent();
+        test_feedbackState_withoutTheTriggerEffectsCapOnlyTriggerEffectsStayAway();
+        test_feedbackState_withoutThePlayerLedsCapOnlyPlayerLedsStayAway();
+        test_feedbackState_aCapTheRePutAddedBringsTheStateSetWhileItWasOff();
+        test_feedbackState_aPadTheRePutRepluggedHasNothingToResend();
+        test_feedbackState_aSlotTheRePutDroppedIsNotResent();
 
-    test_concurrent_upsertCloseSnapshot();
+        test_concurrent_upsertCloseSnapshot();
 
-    test_controllerTypeHelpers();
-    test_applyResultNames();
-    test_closeReasonNames();
-    test_capabilityBits();
-    test_wireConstants();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        test_controllerTypeHelpers();
+        test_applyResultNames();
+        test_closeReasonNames();
+        test_capabilityBits();
+        test_wireConstants();
+    });
 }

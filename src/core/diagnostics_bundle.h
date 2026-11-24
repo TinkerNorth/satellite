@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 // GET /api/diagnostics: Satellite's dish-diagnostics.v1 file, the shape every
-// Dish client writes (docs/architecture.md "Diagnostics file"). Pure: the route
+// Dish client writes (docs/ARCHITECTURE.md "Diagnostics file"). Pure: the route
 // gathers the inputs, this redacts them and builds the document.
 //
 // The file never holds a pairing key, a pairing secret, an IP address, a

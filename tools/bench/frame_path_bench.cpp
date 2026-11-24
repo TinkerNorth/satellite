@@ -25,12 +25,14 @@
 #include "net/pairing_service.h"
 #include "net/session_crypto.h"
 #include "vigem_adapter.h"
+#include "core/checked_io.h"
 
 #include <sodium.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -246,7 +248,7 @@ std::string cpuName() {
 
 bool cpuAllowed(DWORD_PTR mask, int cpu) {
     const bool inRange = cpu >= 0 && cpu < MAX_CPUS;
-    return inRange && ((mask >> cpu) & 1) != 0;
+    return inRange && ((mask >> static_cast<unsigned>(cpu)) & 1U) != 0U;
 }
 
 int chooseReceiverCpu(int requested) {
@@ -394,7 +396,7 @@ ParsedOptions parseOptions(int argc, char** argv) {
 }
 
 void printUsage(std::FILE* out) {
-    std::fputs("usage: bench_frame_path [options]\n"
+    satellite::io::written(out, std::fputs("usage: bench_frame_path [options]\n"
                "  --secs <s>        seconds per run (default 3)\n"
                "  --reps <n>        interleaved repetitions, the median rep is reported "
                "(default 3)\n"
@@ -564,7 +566,7 @@ class BenchLog : public ILogPort {
     void logMsg(LogLevel level, const std::string& source, const std::string& message) override {
         ::logMsg(level, source, message);
         if (!verbose_) return;
-        std::fprintf(stderr, "[%s] %s\n", source.c_str(), message.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "[%s] %s\n", source.c_str(), message.c_str()));
     }
 
   private:
@@ -1091,7 +1093,7 @@ struct ReceiverContext {
 
 void configureReceiverThread(ReceiverContext& rx) {
     if (rx.cpu == NO_CPU) return;
-    const DWORD_PTR mask = static_cast<DWORD_PTR>(1) << rx.cpu;
+    const DWORD_PTR mask = static_cast<DWORD_PTR>(1) << static_cast<unsigned>(rx.cpu);
     rx.pinned = SetThreadAffinityMask(GetCurrentThread(), mask) != 0;
     rx.raised = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0;
 }
@@ -1423,8 +1425,9 @@ DishRow summarize(const Scenario& scenario, BackendMode backend, const DishRun& 
 
 std::string fixed(double value, int decimals) {
     std::array<char, 64> text{};
-    std::snprintf(text.data(), text.size(), "%.*f", decimals, value);
-    return text.data();
+    const int written = std::snprintf(text.data(), text.size(), "%.*f", decimals, value);
+    return satellite::io::formatted(written, text.data(), text.size()) ? std::string(text.data())
+                                                                        : std::string();
 }
 
 std::string describe(const std::string& dish, const std::string& what, uint64_t count) {
@@ -1645,7 +1648,12 @@ class ScenarioRun {
         dishes_.push_back(makeDish(planForA(options, scenario), plan.secs));
         if (scenario.withDishB) dishes_.push_back(makeDish(planForB(options), plan.secs));
         pairInConfig(dishes_, scenario.withIdentitySave);
-        if (scenario.withIdentitySave) std::remove(configPath().c_str());
+        // The identity save must start from no file; a stale one is reported, since the
+        // scenario then measures an overwrite instead.
+        if (scenario.withIdentitySave && std::remove(configPath().c_str()) != 0 && errno != ENOENT) {
+            satellite::io::stderrWritten(std::fprintf(
+                stderr, "warning: could not remove %s before the run\n", configPath().c_str()));
+        }
     }
 
     ~ScenarioRun() { g_configStore.reset(); }
@@ -1886,12 +1894,12 @@ void reportRun(BackendMode backend, const Scenario& scenario, int rep, int reps,
     if (result.refreshMs > 0.0) line += " refresh " + fixed(result.refreshMs, 3) + " ms";
     if (result.logLines != 0) line += " log lines " + std::to_string(result.logLines);
     if (result.reads != 0) line += " reads " + std::to_string(result.reads);
-    std::fprintf(stderr, "%s\n", line.c_str());
+    satellite::io::stderrWritten(std::fprintf(stderr, "%s\n", line.c_str()));
     for (const std::string& warning : result.warnings) {
-        std::fprintf(stderr, "  warning: %s\n", warning.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "  warning: %s\n", warning.c_str()));
     }
     for (const std::string& problem : result.problems) {
-        std::fprintf(stderr, "  PROBLEM: %s\n", problem.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "  PROBLEM: %s\n", problem.c_str()));
     }
 }
 
@@ -2189,7 +2197,7 @@ void printBanner(const Options& options, const std::vector<BackendMode>& backend
     std::printf("lock stats: %s\n", LOCK_STATS_BUILD ? "recorded" : "not compiled in");
     std::printf("config: %s\n", configPath().c_str());
     std::printf("receiver thread: %s\n\n", receiver.c_str());
-    std::fflush(stdout);
+    satellite::io::written(stdout, std::fflush(stdout));
 }
 
 void printLegend(const Options& options) {
@@ -2205,12 +2213,12 @@ bool runScenarioOnce(const Options& options, const Scenario& scenario, const Run
                      int reps, ScenarioResult& out) {
     ScenarioRun run(options, scenario, plan);
     out = run.execute();
-    reportRun(plan.backend, scenario, rep, reps, out);
+    reportRun(plan.backend, scenario, rep, reps, out));
     return out.problems.empty();
 }
 
 bool warmUp(const Options& options, const std::vector<BackendMode>& backends, int rxCpu) {
-    std::fprintf(stderr, "warm-up pass, results discarded\n");
+    satellite::io::stderrWritten(std::fprintf(stderr, "warm-up pass, results discarded\n"));
     bool healthy = true;
     for (const BackendMode backend : backends) {
         const RunPlan plan{SMOKE_SECS, SMOKE_SECS / DEFAULT_SECS, rxCpu, backend, false};
@@ -2278,7 +2286,7 @@ bool pacedOnTime(const LatenessByProducer& lateness) {
         if (!medianTooLate(frames.size(), late)) continue;
         const std::string problem = describeMedian(producer, late) + " across the run, over the " +
                                     std::to_string(limit.count()) + " ms a working pacer keeps";
-        std::fprintf(stderr, "PROBLEM: %s\n", problem.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "PROBLEM: %s\n", problem.c_str()));
         onTime = false;
     }
     return onTime;
@@ -2289,7 +2297,7 @@ bool pacedOnTime(const LatenessByProducer& lateness) {
 int main(int argc, char** argv) {
     const ParsedOptions parsed = parseOptions(argc, argv);
     if (!parsed.error.empty()) {
-        std::fprintf(stderr, "%s\n", parsed.error.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "%s\n", parsed.error.c_str()));
         printUsage(stderr);
         return 2;
     }
@@ -2303,21 +2311,21 @@ int main(int argc, char** argv) {
         options.reps = 1;
     }
     if (sodium_init() < 0) {
-        std::fprintf(stderr, "sodium_init failed\n");
+        satellite::io::stderrWritten(std::fprintf(stderr, "sodium_init failed\n"));
         return 1;
     }
     const ConfigSandbox sandbox;
     if (!sandbox.ready()) {
-        std::fprintf(stderr, "could not point SATELLITE_CONFIG_DIR at a temporary directory\n");
+        satellite::io::stderrWritten(std::fprintf(stderr, "could not point SATELLITE_CONFIG_DIR at a temporary directory\n"));
         return 1;
     }
     const BenchFileLog fileLog;
     if (!fileLog.ready()) {
-        std::fprintf(stderr, "could not start the log writer in a temporary directory\n");
+        satellite::io::stderrWritten(std::fprintf(stderr, "could not start the log writer in a temporary directory\n"));
         return 1;
     }
     if (micPackets().empty()) {
-        std::fprintf(stderr, "could not encode the mic audio packets\n");
+        satellite::io::stderrWritten(std::fprintf(stderr, "could not encode the mic audio packets\n"));
         return 1;
     }
 
@@ -2336,16 +2344,16 @@ int main(int argc, char** argv) {
     printMarkdown(rows);
     printLockMarkdown(locks);
     printLegend(options);
-    std::fflush(stdout);
+    satellite::io::written(stdout, std::fflush(stdout));
 
     if (!options.jsonPath.empty() &&
         !writeJson(options.jsonPath, options, rxCpu, rows, measured.reps, locks)) {
-        std::fprintf(stderr, "could not write %s\n", options.jsonPath.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "could not write %s\n", options.jsonPath.c_str()));
         return 1;
     }
 
     if (!options.csvPath.empty() && !writeCsv(options.csvPath, rows)) {
-        std::fprintf(stderr, "could not write %s\n", options.csvPath.c_str());
+        satellite::io::stderrWritten(std::fprintf(stderr, "could not write %s\n", options.csvPath.c_str()));
         return 1;
     }
     return healthy ? 0 : 1;

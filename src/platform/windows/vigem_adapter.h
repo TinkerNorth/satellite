@@ -37,7 +37,7 @@ class ViGEmAdapter : public IGamepadPort {
     bool isDevicePlugged(uint32_t serial) const override;
     bool submitReport(uint32_t serial, const GamepadReport& report) override;
     void setRumbleCallback(RumbleCallback cb) override;
-    void setLightbarCallback(LightbarCallback cb) override;
+    void setLightbarCallback(const LightbarCallback& cb) override;
 
     bool submitMotion(uint32_t serial, const MotionReport& report) override;
     bool submitBattery(uint32_t serial, const BatteryReport& report) override;

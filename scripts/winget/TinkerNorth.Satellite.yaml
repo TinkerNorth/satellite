@@ -1,4 +1,5 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+# Unpublished template: version 1.0.0 is a placeholder, no workflow builds or submits this channel (docs/PACKAGING.md).
 PackageIdentifier: TinkerNorth.Satellite
 PackageVersion: 1.0.0
 DefaultLocale: en-US

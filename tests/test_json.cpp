@@ -112,7 +112,7 @@ static std::string hostFeaturesNested(size_t depth) {
     for (size_t level = 0; level < depth; ++level) body += "{\"a\":";
     body += "true";
     body.append(depth, '}');
-    body += "}";
+    body += '}';
     return body;
 }
 
@@ -135,7 +135,7 @@ static std::string arraysNested(size_t depth) {
 static std::string objectsNested(size_t depth) {
     std::string text;
     for (size_t level = 0; level < depth; ++level) text += "{\"a\":";
-    text += "0";
+    text += '0';
     text.append(depth, '}');
     return text;
 }
@@ -144,7 +144,7 @@ static std::string objectsNested(size_t depth) {
 static std::string siblingArrays(size_t count) {
     std::string text = "[";
     for (size_t i = 0; i < count; ++i) text += (i == 0) ? "[]" : ",[]";
-    text += "]";
+    text += ']';
     return text;
 }
 
@@ -247,31 +247,30 @@ static void test_dump_pretty() {
     JsonOut j;
     j["a"] = 1;
     const std::string s = jsonDumpPretty(j);
-    EXPECT(s.find("\n") != std::string::npos);
+    EXPECT(s.find('\n') != std::string::npos);
     EXPECT(s.find("    \"a\": 1") != std::string::npos ||
            s.find("  \"a\": 1") != std::string::npos);
 }
 
 int main() {
-    test_parse_tolerant();
-    test_typed_accessors_present();
-    test_typed_accessors_fallback();
-    test_try_accessors();
-    test_try_u64_reads_the_whole_unsigned_range();
-    test_try_number_reads_any_json_number();
-    test_object_descend();
-    test_deep_request_body_is_refused_before_anything_copies_it();
-    test_nesting_up_to_the_bound_parses();
-    test_nesting_one_past_the_bound_is_refused_like_malformed_json();
-    test_depth_counts_open_containers_not_siblings();
-    test_request_body_absent_reads_as_an_empty_object();
-    test_request_body_object_is_the_body();
-    test_request_body_that_is_not_an_object_is_refused();
-    test_dump_is_ordered_and_compact();
-    test_dump_escaping();
-    test_dump_invalid_utf8_does_not_throw();
-    test_dump_pretty();
-
-    std::cout << "json: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("json", [] {
+        test_parse_tolerant();
+        test_typed_accessors_present();
+        test_typed_accessors_fallback();
+        test_try_accessors();
+        test_try_u64_reads_the_whole_unsigned_range();
+        test_try_number_reads_any_json_number();
+        test_object_descend();
+        test_deep_request_body_is_refused_before_anything_copies_it();
+        test_nesting_up_to_the_bound_parses();
+        test_nesting_one_past_the_bound_is_refused_like_malformed_json();
+        test_depth_counts_open_containers_not_siblings();
+        test_request_body_absent_reads_as_an_empty_object();
+        test_request_body_object_is_the_body();
+        test_request_body_that_is_not_an_object_is_refused();
+        test_dump_is_ordered_and_compact();
+        test_dump_escaping();
+        test_dump_invalid_utf8_does_not_throw();
+        test_dump_pretty();
+    });
 }

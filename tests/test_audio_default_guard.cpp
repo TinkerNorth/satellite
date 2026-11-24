@@ -111,7 +111,7 @@ static void test_normalize_device_id() {
 
     TEST("surrounding whitespace and NULs are trimmed (REG_SZ reads carry them)");
     EXPECT_EQ(normalizeDeviceId("  ROOT\\USB\\0000  "), std::string("root\\usb\\0000"));
-    EXPECT_EQ(normalizeDeviceId(std::string("ROOT\\USB\\0000\0", 15)),
+    EXPECT_EQ(normalizeDeviceId(std::string("ROOT\\USB\\0000\0\0", 15)),
               std::string("root\\usb\\0000"));
     EXPECT_EQ(normalizeDeviceId("\t\r\n"), std::string(""));
     EXPECT_EQ(normalizeDeviceId(std::string("\0\0", 2)), std::string(""));
@@ -360,7 +360,7 @@ static void test_could_restore_later_drives_the_poll_window() {
     EXPECT(!couldRestoreLater(RoleSnapshot{}));
     EXPECT(!couldRestoreLater(captured(SPEAKERS, /*priorWasOurs=*/true)));
     EXPECT(!couldRestoreLater(captured("")));
-    EXPECT(!couldRestoreLater(captured("  \0", false)));
+    EXPECT(!couldRestoreLater(captured(std::string("  \0", 3), false)));
 }
 
 static void test_snapshot_roles_are_independent() {
@@ -586,6 +586,7 @@ static void test_chain_cycle_guard() {
 static void test_chain_hop_cap() {
     TEST("a chain longer than the cap stops at the cap without a verdict");
     std::vector<DevNode> deep;
+    deep.reserve(20);
     for (int i = 0; i < 20; ++i) deep.push_back(node("USB\\N\\" + std::to_string(i), "usbhub3"));
     ChainResult r = classifyParentChain(deep);
     EXPECT(!r.isOurs());
@@ -600,8 +601,9 @@ static void test_chain_hop_cap() {
 
     TEST("our devnode on the last allowed hop is still found");
     std::vector<DevNode> justInside;
-    for (size_t i = 0; i + 1 < MAX_PARENT_HOPS; ++i)
+    for (size_t i = 0; i + 1 < MAX_PARENT_HOPS; ++i) {
         justInside.push_back(node("USB\\N\\" + std::to_string(i), "usbhub3"));
+    }
     justInside.push_back(node("ROOT\\USB\\0000", "usbip2_ude"));
     r = classifyParentChain(justInside);
     EXPECT(r.verdict == ChainVerdict::OursByService);
@@ -776,45 +778,44 @@ static void test_probe_verdict_names_are_total() {
 }
 
 int main() {
-    test_roles_match_the_erole_enum();
-    test_normalize_device_id();
-    test_device_ids_equal_is_case_insensitive();
-    test_device_id_contains();
-    test_strip_ks_filter_prefix();
+    return satellite::test::runMain("audio_default_guard", [] {
+        test_roles_match_the_erole_enum();
+        test_normalize_device_id();
+        test_device_ids_equal_is_case_insensitive();
+        test_device_id_contains();
+        test_strip_ks_filter_prefix();
 
-    test_decide_restores_a_stolen_default();
-    test_decide_never_touches_a_default_that_is_not_ours();
-    test_decide_when_the_current_default_is_unreadable();
-    test_decide_requires_a_snapshot();
-    test_decide_requires_a_non_empty_prior_id();
-    test_decide_respects_a_deliberate_user_choice();
-    test_decide_will_not_restore_to_the_current_default();
-    test_decide_restores_every_promotion_in_the_window();
-    test_decision_matrix_is_exhaustive();
-    test_reason_names_are_total();
-    test_could_restore_later_drives_the_poll_window();
-    test_snapshot_roles_are_independent();
-    test_plug_lifecycle_walkthrough();
-    test_two_pads_in_one_window();
+        test_decide_restores_a_stolen_default();
+        test_decide_never_touches_a_default_that_is_not_ours();
+        test_decide_when_the_current_default_is_unreadable();
+        test_decide_requires_a_snapshot();
+        test_decide_requires_a_non_empty_prior_id();
+        test_decide_respects_a_deliberate_user_choice();
+        test_decide_will_not_restore_to_the_current_default();
+        test_decide_restores_every_promotion_in_the_window();
+        test_decision_matrix_is_exhaustive();
+        test_reason_names_are_total();
+        test_could_restore_later_drives_the_poll_window();
+        test_snapshot_roles_are_independent();
+        test_plug_lifecycle_walkthrough();
+        test_two_pads_in_one_window();
 
-    test_chain_recognises_our_devnode_by_service();
-    test_chain_recognises_our_devnode_by_hardware_id();
-    test_chain_service_match_is_case_insensitive_but_exact();
-    test_chain_rejects_a_real_dualsense();
-    test_chain_rejects_unrelated_hardware();
-    test_chain_empty_and_degenerate_inputs();
-    test_chain_cycle_guard();
-    test_chain_hop_cap();
-    test_chain_scanner_stops_the_io_walk_early();
-    test_chain_verdict_names_are_total();
+        test_chain_recognises_our_devnode_by_service();
+        test_chain_recognises_our_devnode_by_hardware_id();
+        test_chain_service_match_is_case_insensitive_but_exact();
+        test_chain_rejects_a_real_dualsense();
+        test_chain_rejects_unrelated_hardware();
+        test_chain_empty_and_degenerate_inputs();
+        test_chain_cycle_guard();
+        test_chain_hop_cap();
+        test_chain_scanner_stops_the_io_walk_early();
+        test_chain_verdict_names_are_total();
 
-    test_policy_config_slots_are_pinned();
-    test_probe_accepts_the_verified_layout();
-    test_probe_rejects_a_failed_cocreate();
-    test_probe_rejects_a_failing_hresult();
-    test_probe_rejects_implausible_periods();
-    test_probe_verdict_names_are_total();
-
-    std::cout << "audio_default_guard: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+        test_policy_config_slots_are_pinned();
+        test_probe_accepts_the_verified_layout();
+        test_probe_rejects_a_failed_cocreate();
+        test_probe_rejects_a_failing_hresult();
+        test_probe_rejects_implausible_periods();
+        test_probe_verdict_names_are_total();
+    });
 }

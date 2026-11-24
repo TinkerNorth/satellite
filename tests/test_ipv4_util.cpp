@@ -48,19 +48,11 @@ static void test_round_trip() {
 }
 
 int main() {
-    std::cout << "Running ipv4_util tests...\n\n";
-    test_parse_valid();
-    test_parse_malformed_returns_zero();
-    test_format();
-    test_round_trip();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_ipv4_util", [] {
+        std::cout << "Running ipv4_util tests...\n\n";
+        test_parse_valid();
+        test_parse_malformed_returns_zero();
+        test_format();
+        test_round_trip();
+    });
 }

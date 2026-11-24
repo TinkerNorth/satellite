@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string>
 
-enum class PairingKeyOutcome {
+enum class PairingKeyOutcome : uint8_t {
     Derived,
     Random,
     InvalidClientKey,

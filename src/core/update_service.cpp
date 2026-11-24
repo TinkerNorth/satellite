@@ -5,12 +5,14 @@
 #include "core/ports.h"
 #include "core/semver.h"
 
+#include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 
 namespace {
-enum class RetryStep { None, Download, Repair, Install, Check };
+enum class RetryStep : uint8_t { None, Download, Repair, Install, Check };
 
 bool applyPreferences(Config& cfg, const std::string& channel, bool autoCheck, bool autoDownload,
                       bool autoInstall, bool& channelChanged) {
@@ -518,7 +520,7 @@ bool progressWorthBroadcasting(uint64_t doneBefore, uint64_t totalBefore, uint64
         const uint64_t newPct = (doneNow * 100) / totalNow;
         return newPct != prevPct;
     }
-    return doneNow - doneBefore >= 256 * 1024;
+    return doneNow - doneBefore >= uint64_t{256} * 1024;
 }
 
 void UpdateService::onDownloadProgress(uint64_t soFar, uint64_t total) {

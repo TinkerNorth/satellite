@@ -10,6 +10,7 @@
 #include "net/mdns_rejoin.h"
 #include "core/tracked_mutex.h"
 
+#include <cstdint>
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -114,7 +115,7 @@ std::string nextInstanceLabel(const std::string& label) {
             const size_t digitsEnd = label.size() - 1; // index of ')'
             bool allDigits = true;
             for (size_t i = digitsStart; i < digitsEnd; ++i) {
-                if (!std::isdigit(static_cast<unsigned char>(label[i]))) {
+                if (std::isdigit(static_cast<unsigned char>(label[i])) == 0) {
                     allDigits = false;
                     break;
                 }
@@ -130,7 +131,7 @@ std::string nextInstanceLabel(const std::string& label) {
 }
 
 // Outcome of one inbound packet examined during our probing window.
-enum class ProbeEvent {
+enum class ProbeEvent : uint8_t {
     None,        // packet irrelevant to our probe (or no packet)
     Conflict,    // a peer RESPONSE answered our claimed name → §9 conflict
     LostTiebreak // a peer PROBE for our name and §8.2 says the peer wins
@@ -275,8 +276,9 @@ ProbeResult runProbeSequence(SOCKET sock, DatagramReceiver& rx, const sockaddr_i
             // §8.1 rate limit: 15 conflicts in the trailing 10 s window → wait
             // >=5 s before each probe send.
             while (!conflictTimes.empty() &&
-                   std::chrono::steady_clock::now() - conflictTimes.front() > kRateLimitWindow)
+                   std::chrono::steady_clock::now() - conflictTimes.front() > kRateLimitWindow) {
                 conflictTimes.pop_front();
+            }
             if (conflictTimes.size() >= kRateLimitConflicts) {
                 logMsg(LogLevel::WARN, "mdns",
                        "mDNS probing rate-limited: 15+ conflicts in 10 s; "
@@ -317,9 +319,10 @@ ProbeResult runProbeSequence(SOCKET sock, DatagramReceiver& rx, const sockaddr_i
 
         if (!conflict && !lostTiebreak) {
             // Three clean probes: the name is ours (§8.1).
-            if (attempt > 0)
+            if (attempt > 0) {
                 logMsg(LogLevel::INFO, "mdns",
                        "mDNS probing succeeded; claimed '" + result.instance + "' after rename");
+            }
             return result;
         }
 
@@ -516,7 +519,7 @@ void answerQuery(const Responder& r, const uint8_t* buf, size_t n, const sockadd
 
     // Ignore responses (QR bit set); we only answer queries.
     constexpr uint16_t QR_BIT = 0x8000;
-    if (header.flags & QR_BIT) return;
+    if ((header.flags & QR_BIT) != 0) return;
 
     const std::string serviceType = mdns::SERVICE_TYPE_DOMAIN;
     const std::string instanceFqdn = r.instance + "." + serviceType;

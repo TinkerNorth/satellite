@@ -61,7 +61,7 @@ struct FuzzGamepad : IGamepadPort {
     bool submitTouchpad(uint32_t, const TouchpadReport&) override { return true; }
     bool submitRelativeMouse(int, int, const MouseButtons&, int) override { return true; }
     bool supportsRelativeMouse() const override { return true; }
-    void setLightbarCallback(LightbarCallback) override {}
+    void setLightbarCallback(const LightbarCallback&) override {}
 };
 
 struct FuzzClient : IClientPort {

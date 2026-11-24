@@ -1,12 +1,15 @@
 # Security policy: TinkerNorth
 
-This file covers all four TinkerNorth repositories that ship the
-wireless-gamepad product end-to-end:
+This file covers the six TinkerNorth repositories that ship the
+wireless-gamepad product end-to-end (the website is
+https://dish.tinkernorth.com):
 
-- [`satellite`](https://github.com/TinkerNorth/satellite): server (Windows / Linux / macOS)
-- [`dish-android`](https://github.com/TinkerNorth/dish-android): Android client
-- [`dish-linux`](https://github.com/TinkerNorth/dish-linux): Linux client (Qt6 / SDL2)
-- [`dish-mac`](https://github.com/TinkerNorth/dish-mac): macOS client (SwiftUI)
+- [`satellite`](https://github.com/TinkerNorth/satellite): Satellite, the server (Windows / Linux / macOS)
+- [`dish-android`](https://github.com/TinkerNorth/dish-android): Dish for Android
+- [`dish-ios`](https://github.com/TinkerNorth/dish-ios): Dish for iOS (SwiftUI)
+- [`dish-mac`](https://github.com/TinkerNorth/dish-mac): Dish for macOS (SwiftUI)
+- [`dish-windows`](https://github.com/TinkerNorth/dish-windows): Dish for Windows (Qt6 / SDL2)
+- [`dish-linux`](https://github.com/TinkerNorth/dish-linux): Dish for Linux (Qt6 / SDL2)
 
 Each repo has its own `CONTRIBUTING.md#security` section with
 ecosystem-specific local commands; this file is the single source of
@@ -49,9 +52,9 @@ date regardless. We'd rather know than not know.
 
 In scope:
 
-- All four repos in this directory.
-- Release artifacts attached to GitHub Releases for any of the four repos.
-- The wire protocol (protocol 1; the single source of truth is
+- All six repos above.
+- Release artifacts attached to GitHub Releases for any of the six repos.
+- The wire protocol (protocol 4; the single source of truth is
   [`docs/contract.md`](docs/contract.md)): the HTTPS `:9443` control plane
   (TOFU-pinned self-signed TLS, HMAC proof-of-key headers, declarative
   session PUT) and the UDP `:9876` data plane (ChaCha20-Poly1305-IETF under
@@ -62,7 +65,7 @@ In scope:
 - On Windows, the `SatelliteHmBroker` service boundary: the LocalSystem
   broker that creates HIDMaestro virtual devices for the unelevated
   `satellite.exe` over `\\.\pipe\satellite-hm-broker` (interactive-logon
-  DACL, client image-path check; see `docs/architecture.md`, "Elevation
+  DACL, client image-path check; see `docs/ARCHITECTURE.md`, "Elevation
   story"). A way for a non-interactive or remote caller to reach it, or to
   obtain anything beyond virtual controller / audio device creation through
   it, is in scope.
@@ -86,10 +89,12 @@ Out of scope:
 
 | Repo | Supported | Notes |
 |---|---|---|
-| `satellite` | latest minor on `main`; previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS virtual pads require the virtual-HID entitlement (unentitled builds fall back to an inert backend) |
-| `dish-android` | latest minor on `main`; previous minor for 90 days | minSdk 24 |
-| `dish-linux` | latest minor on `main`; previous minor for 90 days | tracks the oldest LTS the release CI builds against |
-| `dish-mac` | latest minor on `main`; previous minor for 90 days | macOS 13+ |
+| `satellite` | latest minor on `main` (2.4.0 today); previous minor for 90 days | Windows is the canonical target; Linux is supported; macOS ships as a stub with no virtual gamepad (an unentitled build falls back to an inert backend) that runs only where Homebrew's libsodium, OpenSSL and opus are installed |
+| `dish-android` | latest minor on `main` (2.7.0 today); previous minor for 90 days | minSdk 24 |
+| `dish-ios` | latest minor on `main` (no release tagged yet); previous minor for 90 days | iOS 26.0+ |
+| `dish-mac` | latest minor on `main` (1.4.0 today); previous minor for 90 days | macOS 13+ |
+| `dish-windows` | latest minor on `main` (2.8.0 today); previous minor for 90 days | Windows 10 1809 (build 17763)+ |
+| `dish-linux` | latest minor on `main` (2.8.1 today); previous minor for 90 days | tracks the oldest LTS the release CI builds against |
 
 Patch releases (`X.Y.Z+1`) are issued on demand for the latest minor;
 the previous minor only receives backports for high/critical fixes.
@@ -143,33 +148,43 @@ Each repo runs the same shape of gates:
 
 **On every PR** (blocking):
 
-- Action-pin lint: every `uses:` line must reference a 40-char SHA.
-- Allowlist expiry: `.security/allowlist.yaml` entries must be unexpired.
-- Dependency review: GitHub advisory DB (PR-only).
-- OSV-Scanner: vendored components + manifest deps; ecosystem-specific
-  scope (see each repo's `security.yml`).
-- Gitleaks: secret scanning over the worktree.
-- CodeQL: `cpp` for `satellite` / `dish-linux`, `swift` for `dish-mac`,
+- Action-pin lint (`scripts/check-action-pins.sh`): every `uses:` line
+  names a 40-character commit SHA followed by its `# vX.Y.Z`.
+- Allowlist (`scripts/security-allowlist.py`): `.security/allowlist.yaml`
+  entries must be complete, unexpired and at most 90 days out; they are the
+  only place a vulnerability is accepted, and OSV-Scanner reads them.
+- Dependency review: GitHub advisory DB (PR-only), blocking on a high-severity
+  finding.
+- OSV-Scanner 2.7.1 (`scripts/osv-scan.sh`): the tree's manifests (for
+  Satellite, the helper's NuGet test packages) and the vendored components
+  by upstream commit; a scan that finds no package fails.
+- Gitleaks 8.30.1: secret scanning over the full history.
+- CodeQL: `cpp` for `satellite` (first-party code; the byte-identical vendored
+  components are OSV-Scanner's and the freshness gate's) / `dish-linux`, `swift` for `dish-mac`,
   `java-kotlin` + `cpp` for `dish-android`.
 
 **On every tagged release** (also blocking):
 
+- The tag must name `/VERSION`, and `CHANGELOG.md` must have its heading
+  (`scripts/check-version-consistency.sh --tag`).
 - Re-run of every PR-time gate against the tagged commit.
 - Required-secrets gate: reports which platform signing secrets are
   missing for a tag (Windows Authenticode, Apple Developer ID +
-  notarization, Android keystore). It is **advisory by default** —
+  notarization, Android keystore). It is **advisory by default**:
   `satellite` currently ships without those certificates, so releases
   degrade to `-unsigned` artifacts instead of failing, and authenticity
   rests on cosign + SLSA provenance rather than an OS-vendor
   certificate. Setting the repository variable
   `ENFORCE_RELEASE_SIGNING=true` restores the hard failure for stable
   tags once the certificates exist.
-- Artifact-level vulnerability scan: Anchore Grype, fails on
-  CRITICAL/HIGH.
-- SBOM generation: Syft, both SPDX-JSON and CycloneDX-JSON.
-- `SHA256SUMS` over every artifact + its signatures + the SBOMs.
-- Cosign keyless signing: every artifact and `SHA256SUMS` get a `.sig`
-  + `.crt`, anchored in the Sigstore transparency log.
+- Artifact-level vulnerability scan: Grype 0.122.1, fails on HIGH and
+  CRITICAL.
+- SBOM generation: Syft 1.57.2, both SPDX-JSON and CycloneDX-JSON.
+- `SHA256SUMS` over every artifact and the SBOMs.
+- Cosign 3.1.4 keyless signing: every artifact and `SHA256SUMS` get one
+  Sigstore bundle (`<file>.sigstore.json`), anchored in the Sigstore
+  transparency log. Every pull request runs the same job as a dry run over
+  the packages and installer it built, signed with a throwaway key.
 - SLSA L3 build provenance: `slsa-framework/slsa-github-generator`
   emits `<repo>.intoto.jsonl`.
 
@@ -181,123 +196,109 @@ Release page.
 
 ## Verifying a release artifact (consumer recipe)
 
-This recipe works the same way for every release, repo, and platform;
-only the artifact filenames change.
+This recipe works the same way for every release, every repo, every
+platform; only the artifact filenames change. Releases cut after the shared
+release-hardening workflow landed carry one Sigstore bundle per file
+(`<file>.sigstore.json`); earlier releases (Satellite up to 2.3.0) carry a
+`.sig` and a `.crt` per file and are verified the second way below. The tag is
+bare `X.Y.Z` in every command.
 
 ### 0) Pre-requisites
 
 ```bash
-# cosign 2.x
-brew install cosign            # macOS
-go install github.com/sigstore/cosign/v2/cmd/cosign@latest
-
-# slsa-verifier (for the SLSA provenance step)
-go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+# cosign 3.x: brew install cosign, or a release binary from
+# github.com/sigstore/cosign/releases (check it against cosign_checksums.txt)
 ```
 
 ### 1) Download every file from the Release
 
-For tag `X.Y.Z` of `<repo>` (one of `satellite`, `dish-android`,
-`dish-linux`, `dish-mac`; releases before satellite 1.0.0 used `vX.Y.Z`
-tags):
+```bash
+TAG=X.Y.Z
+REPO=<repo>     # satellite, dish-android, dish-ios, dish-mac, dish-windows, dish-linux
+gh release download "$TAG" -R "TinkerNorth/$REPO" -D "$REPO-$TAG"
+cd "$REPO-$TAG"
+```
+
+You should see the platform artifacts, `SHA256SUMS` with its signature,
+`<product>.sbom.spdx.json` and `<product>.sbom.cdx.json`, and
+`<product>.intoto.jsonl` (the SLSA L3 provenance).
+
+### 2) Releases after the shared workflow: one bundle per file
 
 ```bash
-gh release download X.Y.Z -R TinkerNorth/<repo> -D ./release
-cd release
-ls
+# SHA256SUMS was signed by this repository's release workflow, on this tag.
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/TinkerNorth/$REPO/.github/workflows/_release_harden.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+
+# Every file you downloaded matches it (macOS: shasum -a 256 -c).
+sha256sum --ignore-missing -c SHA256SUMS
 ```
 
-You should see (filenames vary per repo):
+The identity is exact, not a regular expression, and names
+`_release_harden.yml` because the certificate's identity is the workflow that
+ran the signing step. To verify one file on its own, run the same
+`cosign verify-blob` with `--bundle <file>.sigstore.json` and `<file>`.
 
-```
-satellite-...        # platform binary / installer / .app / .apk / etc.
-satellite-....sig    # cosign signature
-satellite-....crt    # cosign certificate
-SHA256SUMS
-SHA256SUMS.sig
-SHA256SUMS.crt
-satellite.sbom.spdx.json
-satellite.sbom.cdx.json
-satellite.intoto.jsonl   # SLSA L3 provenance
-```
+### 3) Releases up to Satellite 2.3.0: `.sig` and `.crt`
 
-### 2) Verify the checksum bundle
-
-```bash
-sha256sum -c SHA256SUMS         # Linux / Windows
-shasum -a 256 -c SHA256SUMS     # macOS
-```
-
-Every line must say `OK`. A failure here means the artifact was
-modified after release.
-
-### 3) Verify cosign signed `SHA256SUMS` from the right workflow
+Satellite signed these in the reusable `_release_harden.yml` too, so the
+identity names that file. cosign 3 still verifies them with the deprecated
+flags (it prints two deprecation lines):
 
 ```bash
 cosign verify-blob \
-  --certificate SHA256SUMS.crt \
-  --signature   SHA256SUMS.sig \
-  --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  --certificate SHA256SUMS.crt --signature SHA256SUMS.sig \
+  --certificate-identity "https://github.com/TinkerNorth/$REPO/.github/workflows/_release_harden.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
+shasum -a 256 --ignore-missing -c SHA256SUMS
 ```
 
-Output ends with `Verified OK`. The `--certificate-identity-regexp`
-binds the signature to a specific workflow path on `TinkerNorth/<repo>`;
-substitute the actual GitHub organisation. A match means the signature
-came from a tagged-release run of `release.yml` on the public commit
-that produced these artifacts; the Sigstore transparency log
-(`https://search.sigstore.dev/`) carries the same record.
+(Run against Satellite 2.3.0 with cosign 3.1.4: `Verified OK` for
+`SHA256SUMS` and for `satellite_2.3.0_amd64.deb`'s own `.sig` and `.crt`,
+and the `.deb` `OK` against `SHA256SUMS`. Other repositories' earlier
+releases name `release.yml` or `_release_harden.yml` in the identity; read
+the workflow out of the certificate.)
 
-To verify each artifact individually (not just `SHA256SUMS`):
+### 4) The SLSA L3 provenance
+
+`<product>.intoto.jsonl` is a Sigstore bundle whose statement names every
+released file by SHA-256. It is signed by the SLSA generator at the exact
+commit the workflow pins, which `slsa-verifier` refuses ("invalid ref") because
+that is not a release tag, so verify it with cosign, naming the generator's
+commit from the provenance's `builder.id`:
 
 ```bash
-for f in *.exe *.zip *.deb *.AppImage *.apk *.aab; do
-  [ -f "$f" ] || continue
-  cosign verify-blob \
-    --certificate "$f.crt" \
-    --signature   "$f.sig" \
-    --certificate-identity-regexp '^https://github\.com/TinkerNorth/<repo>/\.github/workflows/release\.yml@refs/tags/v?[0-9].*$' \
-    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-    "$f"
-done
+cosign verify-blob-attestation \
+  --bundle "satellite.intoto.jsonl" --type slsaprovenance \
+  --certificate-identity "https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  satellite_2.3.0_amd64.deb
 ```
 
-### 4) Verify the SLSA L3 provenance
-
-```bash
-slsa-verifier verify-artifact \
-  --provenance-path <repo>.intoto.jsonl \
-  --source-uri      github.com/TinkerNorth/<repo> \
-  --source-tag      X.Y.Z \
-  <artifact-filename>
-```
-
-This proves the artifact was produced by a tagged run of `release.yml`
-on the named source repo. Output ends with
-`PASSED: SLSA verification passed`.
+(`Verified OK` against Satellite 2.3.0's `.deb`. The commit is the generator
+v2.1.0 the workflow pins; use the one in the provenance you are checking.)
 
 ### 5) (Optional) Inspect the SBOM
 
 ```bash
-# Top-level summary
-syft attestation --output spdx-json release/<repo>.sbom.spdx.json
-
-# Or just diff against last release
-diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
-     <(jq -S . release/<repo>.sbom.spdx.json) \
-  | less
+jq -S . satellite.sbom.spdx.json | less
 ```
 
 ---
 
 ## Known gaps
 
-- **Branch protection on `main`.** Three of the four repos run on a
-  free org plan that does not expose required-status-check enforcement
-  for private repositories. Direct pushes to `main` are blocked by
-  convention only; the per-repo CI workflows are the de-facto gate.
-  See the matching `README.md` in each repo for the full text.
+- **slsa-verifier refuses the provenance.** The generator is called by
+  commit SHA, which slsa-verifier rejects as "not a release tag"; cosign
+  verifies the same provenance (step 4 above).
+- **Branch protection on `main`.** Changes land through pull requests.
+  On `satellite`, `main` requires the CI, security and CodeQL checks to pass
+  and the branch to be up to date before a merge; the other repos carry
+  their own rules, which this file does not restate.
 - **Vendored-header scanners.** `satellite/lib/` and
   `satellite/vigem/include/` are not understood by ecosystem scanners.
   `scripts/vendored-osv-lockfile.sh` hands OSV-Scanner the upstream
@@ -346,11 +347,14 @@ diff <(jq -S . prev-release/<repo>.sbom.spdx.json) \
 - **macOS virtual pads are entitlement-gated.** The macOS backend
   synthesizes virtual DualShock 4 controllers via `IOHIDUserDevice`,
   which requires the `com.apple.developer.hid.virtual.device`
-  entitlement. Production (signed) builds carry it; CI artifacts and
-  local unentitled builds detect the missing entitlement at runtime
+  entitlement. No entitled build has shipped: the released
+  `satellite-macos-stub-*` artifacts, CI artifacts and local builds detect the missing entitlement at runtime
   and fall back to the historical inert backend: the protocol stack
   runs, but every controller descriptor applies as
   `backendUnavailable`. The CI artifact name
   (`satellite-macos-stub-...`) reflects that fallback. Don't open a
   vulnerability report for the absence of virtual-gamepad creation in
   an unentitled build; it's the documented, probe-enforced fallback.
+  The stub links Homebrew's libsodium, OpenSSL and opus from
+  `/opt/homebrew` rather than bundling them, so their security updates
+  come from `brew upgrade`, not from a Satellite release.

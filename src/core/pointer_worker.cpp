@@ -16,7 +16,7 @@ PointerMotion touchpadPointerMotion(const TouchpadReport& prev, bool prevValid,
     const bool continuous = prevValid && prev.finger0.active && report.finger0.active &&
                             prev.finger0.trackingId == report.finger0.trackingId;
     if (continuous) {
-        const int32_t dt_ms = static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs);
+        const auto dt_ms = static_cast<int32_t>(report.eventTimeMs - prev.eventTimeMs);
         if (dt_ms > TOUCHPAD_MOUSE_MAX_GAP_MS) {
             remX = 0.0f;
             remY = 0.0f;

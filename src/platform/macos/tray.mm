@@ -11,6 +11,7 @@
 #include "core/update_service.h"
 #include "net/pairing.h"
 #include "net/pairing_service.h"
+#include "core/checked_io.h"
 
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
@@ -44,8 +45,9 @@ static UNUserNotificationCenter* notificationCenter() {
         static bool reported = false;
         if (!reported) {
             reported = true;
-            std::fprintf(stderr, "[satellite] no bundle identifier: pairing requests will not "
-                                 "raise notifications (use the web UI)\n");
+            satellite::io::stderrWritten(
+                std::fprintf(stderr, "[satellite] no bundle identifier: pairing requests will not "
+                                     "raise notifications (use the web UI)\n"));
         }
         return nil;
     }
@@ -95,7 +97,7 @@ static void promptForPairing(const std::string& deviceId) {
 }
 
 - (void)updateAction:(id)sender {
-    if (!g_updateService) return;
+    if (g_updateService == nullptr) return;
     UpdateStatusSnapshot s = g_updateService->snapshot();
     if (s.state == UpdateState::Downloaded && s.info.available) {
         g_updateService->requestInstall();
@@ -135,7 +137,7 @@ static void promptForPairing(const std::string& deviceId) {
     // Label tracks state. Disabled while in flight.
     NSString* updateTitle = @"Check for Updates…";
     BOOL updateEnabled = (g_updateService != nullptr);
-    if (g_updateService) {
+    if (g_updateService != nullptr) {
         UpdateStatusSnapshot s = g_updateService->snapshot();
         if (s.state == UpdateState::Downloaded && s.info.available) {
             updateTitle = [NSString stringWithFormat:@"Install Update %s", s.info.version.c_str()];
@@ -181,7 +183,7 @@ static void promptForPairing(const std::string& deviceId) {
 // buttons of its own) opens the Accept/Reject alert.
 - (void)userNotificationCenter:(UNUserNotificationCenter*)center
     didReceiveNotificationResponse:(UNNotificationResponse*)response
-             withCompletionHandler:(void (^)(void))completionHandler {
+             withCompletionHandler:(void (^)())completionHandler {
     UNNotificationRequest* request = response.notification.request;
     [center removeDeliveredNotificationsWithIdentifiers:@[ request.identifier ]];
     NSString* devId = request.content.userInfo[@"deviceId"];
@@ -213,11 +215,12 @@ void addTrayIcon() {
     [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
                           completionHandler:^(BOOL granted, NSError* error) {
                             if (granted) return;
-                            std::fprintf(stderr,
-                                         "[satellite] notifications not authorized%s%s; pairing "
-                                         "requests show in the web UI only\n",
-                                         error != nil ? ": " : "",
-                                         error != nil ? error.localizedDescription.UTF8String : "");
+                            satellite::io::stderrWritten(std::fprintf(
+                                stderr,
+                                "[satellite] notifications not authorized%s%s; pairing "
+                                "requests show in the web UI only\n",
+                                error != nil ? ": " : "",
+                                error != nil ? error.localizedDescription.UTF8String : ""));
                           }];
 }
 
@@ -225,8 +228,12 @@ void addTrayIcon() {
 // before touching AppKit; the notification carries the deviceId so the click
 // handler can re-snapshot and prompt.
 void notifyPairRequestMac(const std::string& deviceId) {
-    std::string devCopy = deviceId;
+    // The block outlives the caller's string; an NSString is what it retains. A
+    // deviceId that is not UTF-8 could not ride in the notification's userInfo.
+    NSString* devId = [NSString stringWithUTF8String:deviceId.c_str()];
+    if (devId == nil) return;
     dispatch_async(dispatch_get_main_queue(), ^{
+      const std::string devCopy = devId.UTF8String;
       std::string name, ip, pin;
       int secs = 0;
       if (!pairRequestSnapshot(devCopy, name, ip, pin, secs)) return;
@@ -237,7 +244,7 @@ void notifyPairRequestMac(const std::string& deviceId) {
       content.body =
           [NSString stringWithFormat:@"%s (%s) wants to pair. Click to accept or reject.",
                                      name.empty() ? "A device" : name.c_str(), ip.c_str()];
-      content.userInfo = @{@"deviceId" : [NSString stringWithUTF8String:devCopy.c_str()]};
+      content.userInfo = @{@"deviceId" : devId};
       // No trigger: deliver now.
       UNNotificationRequest* request =
           [UNNotificationRequest requestWithIdentifier:pairNotificationIdentifier(devCopy)
@@ -246,8 +253,9 @@ void notifyPairRequestMac(const std::string& deviceId) {
       [center addNotificationRequest:request
                withCompletionHandler:^(NSError* error) {
                  if (error == nil) return;
-                 std::fprintf(stderr, "[satellite] pairing notification not delivered: %s\n",
-                              error.localizedDescription.UTF8String);
+                 satellite::io::stderrWritten(
+                     std::fprintf(stderr, "[satellite] pairing notification not delivered: %s\n",
+                                  error.localizedDescription.UTF8String));
                }];
     });
 }

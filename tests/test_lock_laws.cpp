@@ -55,6 +55,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -67,7 +68,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-enum class Allowance { ByDesign, Debt };
+enum class Allowance : uint8_t { ByDesign, Debt };
 
 const char* allowanceName(Allowance why) {
     return why == Allowance::ByDesign ? "by design" : "debt";
@@ -84,20 +85,20 @@ struct LockPair {
     Allowance why;
 };
 
-const std::vector<LockName> RECEIVE_MAY_ACQUIRE = {};
+constexpr std::span<const LockName> RECEIVE_MAY_ACQUIRE{};
 
-const std::vector<LockName> LIFECYCLE_MAY_HOLD = {
+constexpr LockName LIFECYCLE_MAY_HOLD[] = {
     {"service.topology", Allowance::ByDesign},
 };
 
 #ifdef _WIN32
-const std::vector<LockName> HELPER_PIPE_MAY_HOLD = {
+constexpr LockName HELPER_PIPE_MAY_HOLD[] = {
     {"hidmaestro.helper", Allowance::ByDesign},
     {"service.topology", Allowance::ByDesign},
 };
 #endif
 
-const std::vector<LockPair> BLOCKING_MAY_HOLD = {
+constexpr LockPair BLOCKING_MAY_HOLD[] = {
     {"autostart.write", "config.effects", Allowance::ByDesign},
     {"backend.lifecycle", "service.topology", Allowance::ByDesign},
     {"crash.toggle", "config.effects", Allowance::ByDesign},
@@ -109,7 +110,7 @@ const std::vector<LockPair> BLOCKING_MAY_HOLD = {
 #endif
 };
 
-const std::vector<LockPair> ORDER_MAY_NEST = {
+constexpr LockPair ORDER_MAY_NEST[] = {
     {"config.effects", "config.snapshot", Allowance::ByDesign},
     {"config.write", "config.snapshot", Allowance::ByDesign},
     {"service.topology", "service.state", Allowance::ByDesign},
@@ -483,14 +484,14 @@ class LawBackend : public IGamepadPort {
     }
 
     void setRumbleCallback(RumbleCallback cb) override { rumble_ = std::move(cb); }
-    void setLightbarCallback(LightbarCallback cb) override { lightbar_ = std::move(cb); }
+    void setLightbarCallback(const LightbarCallback& cb) override { lightbar_ = cb; }
 
     void fireFeedback(uint32_t serial, uint16_t level) {
         RumbleReport report;
         report.strongMagnitude = level;
         report.weakMagnitude = level;
         if (rumble_) rumble_(serial, report);
-        if (lightbar_) lightbar_(serial, static_cast<uint8_t>(level & 0xFF), 0, 0);
+        if (lightbar_) lightbar_(serial, static_cast<uint8_t>(level & 0xFFU), 0, 0);
     }
 
   private:
@@ -799,6 +800,7 @@ class LawRun {
             [this] { return buildConnectionsJson(svc_) + buildDevicesJson(svc_); },
             satellite::EventBroadcasterOptions{DASHBOARD_STREAMS, DASHBOARD_TICK, true});
         std::vector<std::thread> viewers;
+        viewers.reserve(DASHBOARD_STREAMS);
         for (size_t i = 0; i < DASHBOARD_STREAMS; ++i) {
             viewers.emplace_back([&] { runViewer(dashboard, tally_); });
         }
@@ -1529,7 +1531,7 @@ NameSet heldDuring(const lockstats::Snapshot& snap, const std::string& region) {
 #endif
 
 void expectExactly(const std::string& law, const NameSet& observed,
-                   const std::vector<LockName>& listed) {
+                   std::span<const LockName> listed) {
     TEST(law);
     NameSet names;
     for (const LockName& entry : listed) names.insert(entry.lock);
@@ -1548,7 +1550,7 @@ void expectExactly(const std::string& law, const NameSet& observed,
 }
 
 void expectExactly(const std::string& law, const PairSet& observed,
-                   const std::vector<LockPair>& listed) {
+                   std::span<const LockPair> listed) {
     TEST(law);
     PairSet pairs;
     for (const LockPair& entry : listed) pairs.insert({entry.first, entry.second});
@@ -1782,57 +1784,51 @@ bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICAT
 #endif
 
 int main() {
-    if (sodium_init() < 0) {
-        std::cerr << "sodium_init failed\n";
-        return 1;
-    }
-    ConfigSandbox sandbox;
-    if (!sandbox.ready()) {
-        std::cerr << "configPath() could not be pointed at a sandbox directory; refusing to run "
-                     "anything that saves the config\n";
-        return 1;
-    }
+    return satellite::test::runMain("test_lock_laws", []() -> int {
+        if (sodium_init() < 0) {
+            std::cerr << "sodium_init failed\n";
+            return 1;
+        }
+        ConfigSandbox sandbox;
+        if (!sandbox.ready()) {
+            std::cerr
+                << "configPath() could not be pointed at a sandbox directory; refusing to run "
+                   "anything that saves the config\n";
+            return 1;
+        }
 
-    lockstats::reset();
-    TEST("logger law: the log writer starts");
-    EXPECT(logWriter().start(std::make_unique<DiscardingLogSink>()));
-    LifecycleWatch watch;
-    WorkerCalls calls;
+        lockstats::reset();
+        TEST("logger law: the log writer starts");
+        EXPECT(logWriter().start(std::make_unique<DiscardingLogSink>()));
+        LifecycleWatch watch;
+        WorkerCalls calls;
 #ifdef _WIN32
-    timeBeginPeriod(1);
+        timeBeginPeriod(1);
 #endif
-    runTheServiceOnTheMockBackend(watch, sandbox, calls);
+        runTheServiceOnTheMockBackend(watch, sandbox, calls);
 #ifdef _WIN32
-    runTheServiceOnTheWindowsBackends(watch);
-    runTheTrayOnItsGuiThread();
-    timeEndPeriod(1);
+        runTheServiceOnTheWindowsBackends(watch);
+        runTheTrayOnItsGuiThread();
+        timeEndPeriod(1);
 #endif
-    g_configStore.reset();
-    logWriter().stop();
-    const lockstats::Snapshot snap = lockstats::snapshot();
-    report(snap);
+        g_configStore.reset();
+        logWriter().stop();
+        const lockstats::Snapshot snap = lockstats::snapshot();
+        report(snap);
 
-    TEST("stats: nothing overflowed the registry");
-    EXPECT_EQ(snap.overflows, 0u);
-    checkTheReceiveLaw(snap);
-    checkTheLifecycleLaw(watch, snap);
-    checkTheBlockingLaw(snap);
-    checkTheOrderLaw(snap);
-    checkTheDashboardLaw(snap);
-    checkTheLoggerLaw(snap);
-    checkThePointerLaw(snap, calls.mouse);
-    checkTheMicLaw(snap, calls.mic);
+        TEST("stats: nothing overflowed the registry");
+        EXPECT_EQ(snap.overflows, 0u);
+        checkTheReceiveLaw(snap);
+        checkTheLifecycleLaw(watch, snap);
+        checkTheBlockingLaw(snap);
+        checkTheOrderLaw(snap);
+        checkTheDashboardLaw(snap);
+        checkTheLoggerLaw(snap);
+        checkThePointerLaw(snap, calls.mouse);
+        checkTheMicLaw(snap, calls.mic);
 #ifdef _WIN32
-    checkTheTrayLaw();
+        checkTheTrayLaw();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        return 0;
+    });
 }

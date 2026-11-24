@@ -28,15 +28,15 @@ inline constexpr uint32_t hotCtrlWord(bool active, uint32_t serial) {
 }
 
 inline constexpr uint32_t hotPadInfo(uint16_t caps, uint8_t type, uint8_t touchpadMode) {
-    return static_cast<uint32_t>(caps) | (static_cast<uint32_t>(type) << 16) |
-           (static_cast<uint32_t>(touchpadMode) << 24);
+    return static_cast<uint32_t>(caps) | (static_cast<uint32_t>(type) << 16U) |
+           (static_cast<uint32_t>(touchpadMode) << 24U);
 }
 
 inline constexpr uint16_t hotPadCaps(uint32_t info) { return static_cast<uint16_t>(info); }
 
-inline constexpr uint8_t hotPadType(uint32_t info) { return static_cast<uint8_t>(info >> 16); }
+inline constexpr uint8_t hotPadType(uint32_t info) { return static_cast<uint8_t>(info >> 16U); }
 
-inline constexpr uint8_t hotPadMode(uint32_t info) { return static_cast<uint8_t>(info >> 24); }
+inline constexpr uint8_t hotPadMode(uint32_t info) { return static_cast<uint8_t>(info >> 24U); }
 
 inline constexpr uint32_t hotSessionWord(uint16_t epoch, bool mouseGranted) {
     return static_cast<uint32_t>(epoch) | (mouseGranted ? HOT_SESSION_MOUSE : 0u);
@@ -47,10 +47,10 @@ inline constexpr uint16_t hotSessionEpoch(uint32_t word) { return static_cast<ui
 inline constexpr bool hotSessionMouse(uint32_t word) { return (word & HOT_SESSION_MOUSE) != 0; }
 
 inline constexpr uint32_t hotPadOwner(int slot, uint8_t ctrlIdx) {
-    return (static_cast<uint32_t>(slot + 1) << 8) | ctrlIdx;
+    return (static_cast<uint32_t>(slot + 1) << 8U) | ctrlIdx;
 }
 
-inline constexpr int hotOwnerSlot(uint32_t owner) { return static_cast<int>(owner >> 8) - 1; }
+inline constexpr int hotOwnerSlot(uint32_t owner) { return static_cast<int>(owner >> 8U) - 1; }
 
 inline constexpr uint8_t hotOwnerIndex(uint32_t owner) { return static_cast<uint8_t>(owner); }
 
@@ -78,11 +78,11 @@ inline size_t utf8Prefix(const std::string& text, size_t limit) {
 }
 
 inline constexpr uint64_t packClientAddr(uint32_t ipv4NetworkOrder, uint16_t port) {
-    return (static_cast<uint64_t>(ipv4NetworkOrder) << 16) | port;
+    return (static_cast<uint64_t>(ipv4NetworkOrder) << 16U) | port;
 }
 
 inline constexpr uint32_t clientAddrIPv4(uint64_t addr) {
-    return static_cast<uint32_t>(addr >> 16);
+    return static_cast<uint32_t>(addr >> 16U);
 }
 
 inline constexpr uint16_t clientAddrPort(uint64_t addr) { return static_cast<uint16_t>(addr); }
@@ -96,13 +96,14 @@ inline std::chrono::steady_clock::time_point hotTime(int64_t ticks) {
         std::chrono::steady_clock::duration(static_cast<std::chrono::steady_clock::rep>(ticks)));
 }
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4324)
-#endif
+// One cache line. The structs below that keep writers on separate lines
+// spell their padding out as members, so the compiler adds none of its own:
+// the layout is the one the alignment asks for, and MSVC has no padding to
+// warn about (C4324). The static_asserts after each struct pin it.
+inline constexpr size_t HOT_CACHE_LINE = 64;
 
-struct HotSlot {
-    alignas(64) std::atomic<uint32_t> gen{0};
+struct alignas(HOT_CACHE_LINE) HotSlot {
+    std::atomic<uint32_t> gen{0};
     std::atomic<uint32_t> token{0};
     std::atomic<uint32_t> keyEpoch{0};
     std::atomic<uint64_t> key[HOT_KEY_WORDS]{};
@@ -115,15 +116,19 @@ struct HotSlot {
     std::atomic<uint32_t> nameLength{0};
     std::atomic<uint64_t> name[HOT_NAME_WORDS]{};
 
-    alignas(64) std::atomic<uint32_t> replayKeyEpoch{0};
+    // The identity block above fills seven lines exactly; the replay block
+    // starts the eighth.
+    std::atomic<uint32_t> replayKeyEpoch{0};
     std::atomic<uint32_t> lastCounter{0};
     std::atomic<int64_t> lastPacketTicks{0};
     std::atomic<uint64_t> clientAddr{0};
     std::atomic<uint32_t> txCounter{0};
     std::atomic<bool> feedbackPending{false};
+    std::byte replayLinePad_[35]{};
 
-    alignas(64) std::atomic<uint32_t> txGate{0};
+    std::atomic<uint32_t> txGate{0};
     std::atomic<uint64_t> txDeferredAck{0};
+    std::byte txLinePad_[48]{};
 
     void beginWrite() {
         gen.fetch_add(1, std::memory_order_acq_rel);
@@ -161,25 +166,27 @@ struct HotSlot {
         const size_t length = utf8Prefix(text, HOT_NAME_BYTES);
         uint64_t raw[HOT_NAME_WORDS] = {};
         std::memcpy(raw, text.data(), length);
-        for (size_t i = 0; i < HOT_NAME_WORDS; i++)
+        for (size_t i = 0; i < HOT_NAME_WORDS; i++) {
             name[i].store(raw[i], std::memory_order_relaxed);
+        }
         nameLength.store(static_cast<uint32_t>(length), std::memory_order_relaxed);
     }
 
     std::string loadName() const {
         uint64_t raw[HOT_NAME_WORDS] = {};
-        for (size_t i = 0; i < HOT_NAME_WORDS; i++)
+        for (size_t i = 0; i < HOT_NAME_WORDS; i++) {
             raw[i] = name[i].load(std::memory_order_relaxed);
+        }
         const size_t length =
             std::min<size_t>(nameLength.load(std::memory_order_relaxed), HOT_NAME_BYTES);
-        return std::string(reinterpret_cast<const char*>(raw), length);
+        return {reinterpret_cast<const char*>(raw), length};
     }
 };
 
-inline constexpr uint32_t RX_PAD_MOTION = 1u << 0;
-inline constexpr uint32_t RX_PAD_MOTION_SINK = 1u << 1;
-inline constexpr uint32_t RX_PAD_BATTERY = 1u << 2;
-inline constexpr uint32_t RX_PAD_TOUCHPAD = 1u << 3;
+inline constexpr uint32_t RX_PAD_MOTION = 1u << 0U;
+inline constexpr uint32_t RX_PAD_MOTION_SINK = 1u << 1U;
+inline constexpr uint32_t RX_PAD_BATTERY = 1u << 2U;
+inline constexpr uint32_t RX_PAD_TOUCHPAD = 1u << 3U;
 inline constexpr size_t RX_MOTION_WORDS = (sizeof(MotionReport) + 7) / 8;
 inline constexpr size_t RX_TOUCHPAD_WORDS = (sizeof(TouchpadReport) + 7) / 8;
 
@@ -193,7 +200,7 @@ struct RxPadView {
     TouchpadReport touchpad{};
 };
 
-struct alignas(64) RxPad {
+struct alignas(HOT_CACHE_LINE) RxPad {
     std::atomic<uint32_t> seq{0};
     std::atomic<uint32_t> gen{0};
     std::atomic<uint32_t> flags{0};
@@ -207,6 +214,7 @@ struct alignas(64) RxPad {
     uint32_t ownFlags = 0;
     int64_t micWindowStart = 0;
     uint16_t micPacketsInWindow = 0;
+    std::byte linePad_[46]{};
 
     void beginWrite() {
         seq.store(seq.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
@@ -226,7 +234,7 @@ struct alignas(64) RxPad {
         out.touchpadKeyEpoch = touchpadKeyEpoch.load(std::memory_order_relaxed);
         const uint32_t level = battery.load(std::memory_order_relaxed);
         out.battery.level = static_cast<uint8_t>(level);
-        out.battery.status = static_cast<uint8_t>(level >> 8);
+        out.battery.status = static_cast<uint8_t>(level >> 8U);
         out.motion = loadWords<MotionReport>(motion);
         out.touchpad = loadWords<TouchpadReport>(touchpad);
         std::atomic_thread_fence(std::memory_order_acquire);
@@ -249,27 +257,26 @@ inline constexpr size_t rxAudioParticipant(uint32_t serial, size_t lane) {
     return 2 + (static_cast<size_t>(serial) - 1) * RX_AUDIO_LANES + lane;
 }
 
-class alignas(64) RxEpoch {
+class alignas(HOT_CACHE_LINE) RxEpoch {
   public:
-    explicit RxEpoch(ProcessBarrierFn barrier = nullptr)
-        : barrier_(barrier), needFence_(barrier == nullptr) {}
+    explicit RxEpoch(ProcessBarrierFn barrier = nullptr) : own_(barrier) {}
 
     void enter() {
-        epoch_.store(epoch_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+        own_.epoch.store(own_.epoch.load(std::memory_order_relaxed) + 1, std::memory_order_release);
         std::atomic_signal_fence(std::memory_order_seq_cst);
-        if (needFence_) std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (own_.needFence) std::atomic_thread_fence(std::memory_order_seq_cst);
     }
 
     void exit() {
         std::atomic_signal_fence(std::memory_order_seq_cst);
-        epoch_.store(epoch_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+        own_.epoch.store(own_.epoch.load(std::memory_order_relaxed) + 1, std::memory_order_release);
     }
 
     void enter(size_t participant) {
         std::atomic<uint64_t>& epoch = epochOf(participant);
         epoch.store(epoch.load(std::memory_order_relaxed) + 1, std::memory_order_release);
         std::atomic_signal_fence(std::memory_order_seq_cst);
-        if (needFence_) std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (own_.needFence) std::atomic_thread_fence(std::memory_order_seq_cst);
     }
 
     void exit(size_t participant) {
@@ -279,27 +286,29 @@ class alignas(64) RxEpoch {
     }
 
     void waitQuiescent() const {
-        if (barrier_ != nullptr) {
-            barrier_();
+        if (own_.barrier != nullptr) {
+            own_.barrier();
         } else {
             std::atomic_thread_fence(std::memory_order_seq_cst);
         }
-        waitOut(epoch_);
+        waitOut(own_.epoch);
         for (const Participant& participant : others_) waitOut(participant.epoch);
     }
 
-    uint64_t value() const { return epoch_.load(std::memory_order_acquire); }
+    uint64_t value() const { return own_.epoch.load(std::memory_order_acquire); }
 
     uint64_t value(size_t participant) const {
         return participant == RX_RECEIVE_PARTICIPANT
-                   ? epoch_.load(std::memory_order_acquire)
+                   ? own_.epoch.load(std::memory_order_acquire)
                    : others_[participant - 1].epoch.load(std::memory_order_acquire);
     }
 
   private:
-    struct alignas(64) Participant {
+    struct alignas(HOT_CACHE_LINE) Participant {
         std::atomic<uint64_t> epoch{0};
+        std::byte linePad_[56]{};
     };
+    static_assert(sizeof(Participant) == HOT_CACHE_LINE);
 
     static void waitOut(const std::atomic<uint64_t>& epoch) {
         const uint64_t seen = epoch.load(std::memory_order_acquire);
@@ -308,18 +317,30 @@ class alignas(64) RxEpoch {
     }
 
     std::atomic<uint64_t>& epochOf(size_t participant) {
-        return participant == RX_RECEIVE_PARTICIPANT ? epoch_ : others_[participant - 1].epoch;
+        return participant == RX_RECEIVE_PARTICIPANT ? own_.epoch : others_[participant - 1].epoch;
     }
 
-    std::atomic<uint64_t> epoch_{0};
-    const ProcessBarrierFn barrier_;
-    const bool needFence_;
+    // The receive thread's own line: its epoch and the settings beside it.
+    struct alignas(HOT_CACHE_LINE) Own {
+        explicit Own(ProcessBarrierFn processBarrier)
+            : barrier(processBarrier), needFence(processBarrier == nullptr) {}
+        std::atomic<uint64_t> epoch{0};
+        const ProcessBarrierFn barrier;
+        const bool needFence;
+        std::byte linePad_[47]{};
+    };
+    static_assert(sizeof(Own) == HOT_CACHE_LINE);
+
+    Own own_;
     std::array<Participant, RX_PARTICIPANTS - 1> others_{};
 };
 
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
+static_assert(std::is_standard_layout_v<HotSlot>);
+static_assert(offsetof(HotSlot, replayKeyEpoch) == 7 * HOT_CACHE_LINE);
+static_assert(offsetof(HotSlot, txGate) == 8 * HOT_CACHE_LINE);
+static_assert(sizeof(HotSlot) == 9 * HOT_CACHE_LINE);
+static_assert(sizeof(RxPad) == 2 * HOT_CACHE_LINE);
+static_assert(sizeof(RxEpoch) == (1 + (RX_PARTICIPANTS - 1)) * HOT_CACHE_LINE);
 
 class HotTable {
   public:

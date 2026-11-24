@@ -1,0 +1,52 @@
+.\" SPDX-License-Identifier: LGPL-3.0-or-later
+.TH SATELLITE 1 "2026-11-23" "Satellite" "User Commands"
+.SH NAME
+satellite \- receive game controllers from Dish clients over the network
+.SH SYNOPSIS
+.B satellite
+.SH DESCRIPTION
+.B satellite
+is the receiver of the Dish family. Dish for Android, Dish for iOS, Dish for
+macOS, Dish for Windows and Dish for Linux pair with it over the local network
+and stream their controllers' input to it; Satellite presents each controller
+to the games on this machine as a virtual gamepad created through
+.IR /dev/uinput .
+.PP
+It takes no command-line arguments. It runs in the background, with a tray
+icon where the desktop has an AppIndicator host and headless otherwise, and is
+configured through its dashboard at
+.UR http://localhost:9877
+.UE ,
+which only this machine can reach.
+.SH NETWORK
+UDP port 9876 carries the encrypted controller stream, TCP port 9443 the
+pairing and session API over TLS, and mDNS on UDP 5353 (with a legacy beacon on
+UDP 9879) lets clients find the receiver.
+.SH ENVIRONMENT
+.TP
+.B SATELLITE_CONFIG_DIR
+Where the configuration and the pairing keys are kept, in place of
+.IR $XDG_CONFIG_HOME/satellite .
+.TP
+.B XDG_STATE_HOME
+The log is written under
+.IR $XDG_STATE_HOME/satellite/logs
+(default
+.IR ~/.local/state/satellite/logs ).
+.SH FILES
+.TP
+.I /usr/lib/udev/rules.d/70-satellite-uinput.rules
+Grants the seat user, and the
+.B input
+group, access to
+.IR /dev/uinput .
+.TP
+.I /usr/share/satellite/web
+The dashboard and the bundled controller database.
+.SH SIGNALS
+SIGTERM and SIGINT shut Satellite down cleanly, and it exits 0.
+.SH SEE ALSO
+.UR https://github.com/TinkerNorth/satellite
+.UE ,
+.UR https://dish.tinkernorth.com
+.UE

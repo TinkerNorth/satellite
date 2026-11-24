@@ -81,28 +81,21 @@ void testAnIdleServerWakesAboutTenTimesASecond() {
 } // namespace
 
 int main() {
+    return satellite::test::runMain("test_httplib_idle", []() -> int {
 #ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::cerr << "WSAStartup failed\n";
-        return 1;
-    }
-    timeBeginPeriod(1);
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            std::cerr << "WSAStartup failed\n";
+            return 1;
+        }
+        timeBeginPeriod(1);
 #endif
-    testTheIdleIntervalMacro();
-    testAnIdleServerWakesAboutTenTimesASecond();
+        testTheIdleIntervalMacro();
+        testAnIdleServerWakesAboutTenTimesASecond();
 #ifdef _WIN32
-    timeEndPeriod(1);
-    WSACleanup();
+        timeEndPeriod(1);
+        WSACleanup();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        return 0;
+    });
 }

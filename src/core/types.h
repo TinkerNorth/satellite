@@ -3,6 +3,7 @@
 // Pure domain types: no Windows, Winsock, or platform gamepad headers.
 #pragma once
 
+#include "core/bits.h"
 #include "core/byte_order.h"
 
 #include "core/version.h"
@@ -35,7 +36,7 @@ inline const int DEFAULT_DISC_PORT = 9879;
 inline const int DEFAULT_CLIENT_PORT = 9443;
 
 // Drives the `state` strings on /api/connections, /api/devices, /api/pin/status.
-enum class DeviceLinkState {
+enum class DeviceLinkState : uint8_t {
     Paired,        // in pairedDevices, no live connection
     Linking,       // PUT /api/connections handshake in flight
     Active,        // live connection, packets arriving recently
@@ -45,14 +46,14 @@ enum class DeviceLinkState {
 
 // PINs rotate on a fixed period; the outgoing PIN stays accepted as "previous"
 // for one more period.
-enum class PinState {
+enum class PinState : uint8_t {
     PinActive, // rotating current/previous PIN pair is live
     PinPaired, // a device just consumed a PIN
 };
 
 // Per-controller pipeline state. The APPLY_* codes enumerate failures; this
 // adds the success/transient side.
-enum class ControllerState {
+enum class ControllerState : uint8_t {
     Source,      // physical pad detected on client, not yet forwarded
     Registering, // descriptor PUT in flight
     Allocating,  // descriptor accepted, backend creating the virtual device
@@ -235,8 +236,9 @@ inline const char* closeReasonName(uint8_t reason) {
         return "replaced";
     case CLOSE_REASON_UNPAIRED:
         return "unpaired";
+    default: // an unknown reason reads as an orderly close
+        return "shutdown";
     }
-    return "shutdown";
 }
 
 // Controller capability bits, carried in ControllerDescriptor::caps. Every cap
@@ -283,8 +285,9 @@ inline const char* applyResultName(uint8_t code) {
         return "invalidType";
     case APPLY_ERR_INVALID_INDEX:
         return "invalidIndex";
+    default: // an unknown code reads as a failed plug
+        return "pluginFailed";
     }
-    return "pluginFailed";
 }
 
 // Wire format sizes
@@ -768,9 +771,9 @@ inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES_V2 = 18;
 inline TouchpadReport decodeTouchpadReportV1(const uint8_t* p) {
     TouchpadReport r;
     const uint8_t flags = p[0];
-    r.finger0.active = (flags & 0x01) != 0;
-    r.finger1.active = (flags & 0x02) != 0;
-    r.buttonPressed = (flags & 0x04) != 0;
+    r.finger0.active = satellite::bits::anySet(flags, 0x01U);
+    r.finger1.active = satellite::bits::anySet(flags, 0x02U);
+    r.buttonPressed = satellite::bits::anySet(flags, 0x04U);
     r.finger0.trackingId = p[1];
     r.finger0.x = satellite::readLE16s(p + 2);
     r.finger0.y = satellite::readLE16s(p + 4);
@@ -784,12 +787,12 @@ inline TouchpadReport decodeTouchpadReportV1(const uint8_t* p) {
 inline TouchpadReport decodeTouchpadReportV2(const uint8_t* p) {
     TouchpadReport r;
     const uint8_t fingers = p[0];
-    r.finger0.active = (fingers & 0x01) != 0;
-    r.finger1.active = (fingers & 0x02) != 0;
+    r.finger0.active = satellite::bits::anySet(fingers, 0x01U);
+    r.finger1.active = satellite::bits::anySet(fingers, 0x02U);
     const uint8_t buttons = p[1];
-    r.buttonPressed = (buttons & 0x01) != 0;
-    r.rightPressed = (buttons & 0x02) != 0;
-    r.middlePressed = (buttons & 0x04) != 0;
+    r.buttonPressed = satellite::bits::anySet(buttons, 0x01U);
+    r.rightPressed = satellite::bits::anySet(buttons, 0x02U);
+    r.middlePressed = satellite::bits::anySet(buttons, 0x04U);
     r.finger0.trackingId = p[2];
     r.finger0.x = satellite::readLE16s(p + 3);
     r.finger0.y = satellite::readLE16s(p + 5);

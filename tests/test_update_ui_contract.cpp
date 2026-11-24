@@ -35,7 +35,7 @@ static std::string webPath(const std::string& relative) {
 static std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 static std::string withoutBom(const std::string& text) {
@@ -53,7 +53,7 @@ static std::vector<std::string> firstGroups(const std::string& text, const std::
 }
 
 static std::set<std::string> distinct(const std::vector<std::string>& values) {
-    return std::set<std::string>(values.begin(), values.end());
+    return {values.begin(), values.end()};
 }
 
 static std::set<std::string> snapshotFieldsRead(const SnapshotReader& reader) {
@@ -300,12 +300,12 @@ static void test_controller_state_labels_are_in_every_catalog() {
 // function that names them, over every input it takes.
 static std::set<std::string> hostPartsWritten() {
     std::set<std::string> written;
-    for (int bits = 0; bits < 16; ++bits) {
+    for (unsigned mask = 0; mask < 16U; ++mask) {
         HostDisabled d;
-        d.input = (bits & 1) != 0;
-        d.hid = (bits & 2) != 0;
-        d.xinput = (bits & 4) != 0;
-        d.audio = (bits & 8) != 0;
+        d.input = (mask & 1U) != 0U;
+        d.hid = (mask & 2U) != 0U;
+        d.xinput = (mask & 4U) != 0U;
+        d.audio = (mask & 8U) != 0U;
         for (const char* part : disabledInWindows(d)) written.insert(part);
     }
     return written;
@@ -360,25 +360,17 @@ static void test_every_part_disabled_in_windows_has_a_note() {
 }
 
 int main() {
-    std::cout << "Running update UI contract tests...\n\n";
-    test_scan_sees_the_reads();
-    test_snapshot_fields_are_written();
-    test_release_fields_are_written();
-    test_string_keys_are_in_every_catalog();
-    test_translations_keep_the_placeholders();
-    test_touchpad_surface_types_are_wire_names();
-    test_a_disabled_controller_reads_disabled();
-    test_every_part_disabled_in_windows_has_a_note();
-    test_every_controller_state_written_has_a_label();
-    test_controller_state_labels_are_in_every_catalog();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_update_ui_contract", [] {
+        std::cout << "Running update UI contract tests...\n\n";
+        test_scan_sees_the_reads();
+        test_snapshot_fields_are_written();
+        test_release_fields_are_written();
+        test_string_keys_are_in_every_catalog();
+        test_translations_keep_the_placeholders();
+        test_touchpad_surface_types_are_wire_names();
+        test_a_disabled_controller_reads_disabled();
+        test_every_part_disabled_in_windows_has_a_note();
+        test_every_controller_state_written_has_a_label();
+        test_controller_state_labels_are_in_every_catalog();
+    });
 }

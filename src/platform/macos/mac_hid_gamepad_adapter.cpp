@@ -6,6 +6,8 @@
 #include "mac_hid_gamepad_adapter.h"
 
 #include "core/ds4_report.h"
+#include "core/bits.h"
+#include "core/checked_io.h"
 
 #include <atomic>
 #include <chrono>
@@ -28,6 +30,8 @@
 #include <IOKit/hid/IOHIDUsageTables.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
+
+namespace bits = satellite::bits;
 
 namespace {
 
@@ -110,6 +114,7 @@ struct MacHidGamepadAdapter::Slot {
     uint8_t touchPacketSeq = 0; // next touch frame counter (use-then-increment)
     std::chrono::steady_clock::time_point lastSubmit{};
     uint8_t buf[DS4V2_INPUT_REPORT_BYTES] = {};
+    std::unique_ptr<Slot> nextQuarantined; // see MacHidGamepadAdapter::quarantined_
 };
 
 // Everything a kernel set-report block may touch, shared so the block can
@@ -167,23 +172,26 @@ bool MacHidGamepadAdapter::ensureBusOpen() {
 }
 
 void MacHidGamepadAdapter::closeBus() {
-    std::vector<uint32_t> serials;
-    {
-        std::lock_guard<TrackedMutex> lk(mtx_);
-        serials.reserve(slots_.size());
-        for (auto& [serial, _] : slots_) serials.push_back(serial);
-    }
     // An unconfirmed teardown has no SessionService to quarantine it here
     // (the bus is going away), so the count is what is left to report.
     size_t unconfirmed = 0;
-    for (uint32_t serial : serials) {
+    for (;;) {
+        uint32_t serial = 0;
+        {
+            std::lock_guard<TrackedMutex> lk(mtx_);
+            if (slots_.empty()) break;
+            serial = slots_.begin()->first;
+        }
+        // unplugDevice takes the slot out of slots_ whether or not the cancel
+        // confirms (plugCommon admits only valid serials), so this ends.
         if (!unplugDevice(serial)) unconfirmed++;
     }
     if (unconfirmed != 0) {
-        std::fprintf(stderr,
-                     "satellite: bus closed with %zu virtual pad(s) whose teardown never "
-                     "confirmed; their kernel devices are left in place\n",
-                     unconfirmed);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: bus closed with %zu virtual pad(s) whose teardown never "
+                         "confirmed; their kernel devices are left in place\n",
+                         unconfirmed));
     }
 
     busOpen_.store(false, std::memory_order_release);
@@ -253,9 +261,8 @@ std::unique_ptr<MacHidGamepadAdapter::Slot> MacHidGamepadAdapter::makeSlot(uint3
                                                                            bool isDS4) {
     auto slot = std::make_unique<Slot>();
     slot->isDS4 = isDS4;
-    char queueName[64];
-    std::snprintf(queueName, sizeof(queueName), "com.tinkernorth.satellite.machid.%u", serial);
-    slot->queue = dispatch_queue_create(queueName, DISPATCH_QUEUE_SERIAL);
+    const std::string queueName = "com.tinkernorth.satellite.machid." + std::to_string(serial);
+    slot->queue = dispatch_queue_create(queueName.c_str(), DISPATCH_QUEUE_SERIAL);
     slot->cancelled = dispatch_semaphore_create(0);
     if (slot->queue != nullptr && slot->cancelled != nullptr) return slot;
     if (slot->queue != nullptr) dispatch_release(slot->queue);
@@ -274,10 +281,11 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
 
     IOHIDUserDeviceRef dev = createDs4UserDevice(serial);
     if (dev == nullptr) {
-        std::fprintf(stderr,
-                     "satellite: IOHIDUserDevice create failed for serial=%u; "
-                     "virtual pad unavailable\n",
-                     serial);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: IOHIDUserDevice create failed for serial=%u; "
+                         "virtual pad unavailable\n",
+                         serial));
         return false;
     }
 
@@ -296,8 +304,9 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     IOHIDUserDeviceRegisterSetReportBlock(dev, ^IOReturn(IOHIDReportType type, uint32_t reportID,
                                                          const uint8_t* report,
                                                          CFIndex reportLength) {
-      if (type != kIOHIDReportTypeOutput || report == nullptr || reportLength <= 0)
+      if (type != kIOHIDReportTypeOutput || report == nullptr || reportLength <= 0) {
           return kIOReturnUnsupported;
+      }
       std::shared_ptr<CallbackHub> hub = weakHub.lock();
       if (hub == nullptr) return kIOReturnUnsupported;
       hub->dispatchOutputReport(serial, reportID, report, static_cast<size_t>(reportLength));
@@ -322,10 +331,11 @@ bool MacHidGamepadAdapter::plugCommon(uint32_t serial, bool isDS4) {
     // first real frame lands the same way), so a refusal is reported, not
     // treated as a failed plug.
     if (!submitLocked(*slot)) {
-        std::fprintf(stderr,
-                     "satellite: IOHIDUserDevice refused the priming report for serial=%u; "
-                     "the pad reads as idle only from its first real frame\n",
-                     serial);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: IOHIDUserDevice refused the priming report for serial=%u; "
+                         "the pad reads as idle only from its first real frame\n",
+                         serial));
     }
 
     slots_.emplace(serial, std::move(slot));
@@ -370,12 +380,14 @@ bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
         // to the quarantine list so the intent is ownership, not a leak: the
         // struct is reclaimed with the adapter, the kernel device it names is
         // not, and no submit can reach it (it is out of the map).
-        std::fprintf(stderr,
-                     "satellite: IOHIDUserDevice cancel timed out for serial=%u; "
-                     "serial will be quarantined\n",
-                     serial);
+        satellite::io::stderrWritten(
+            std::fprintf(stderr,
+                         "satellite: IOHIDUserDevice cancel timed out for serial=%u; "
+                         "serial will be quarantined\n",
+                         serial));
         std::lock_guard<TrackedMutex> lk(mtx_);
-        quarantined_.push_back(std::move(slot));
+        slot->nextQuarantined = std::move(quarantined_);
+        quarantined_ = std::move(slot);
         return false;
     }
     CFRelease(slot->device);
@@ -404,7 +416,7 @@ bool MacHidGamepadAdapter::submitLocked(Slot& slot) {
     slot.lastSubmit = now;
 
     ds4PackInputReport(slot.state, slot.buf);
-    slot.state.frameCounter = static_cast<uint8_t>((slot.state.frameCounter + 1) & 0x3F);
+    slot.state.frameCounter = bits::lowByte((bits::u32(slot.state.frameCounter) + 1U) & 0x3FU);
 
     const IOReturn ret = IOHIDUserDeviceHandleReportWithTimeStamp(
         slot.device, mach_absolute_time(), slot.buf, DS4V2_INPUT_REPORT_BYTES);
@@ -466,10 +478,12 @@ bool MacHidGamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport&
 
     // Fresh tracking id on each up->down transition so consumers read a new
     // contact rather than a teleporting drag (same policy as ViGEm/uinput).
-    if (report.finger0.active && !st.finger0.active)
-        st.touchTrackingId0 = static_cast<uint8_t>((st.touchTrackingId0 + 1) & 0x7F);
-    if (report.finger1.active && !st.finger1.active)
-        st.touchTrackingId1 = static_cast<uint8_t>((st.touchTrackingId1 + 1) & 0x7F);
+    if (report.finger0.active && !st.finger0.active) {
+        st.touchTrackingId0 = bits::lowByte((bits::u32(st.touchTrackingId0) + 1U) & 0x7FU);
+    }
+    if (report.finger1.active && !st.finger1.active) {
+        st.touchTrackingId1 = bits::lowByte((bits::u32(st.touchTrackingId1) + 1U) & 0x7FU);
+    }
     st.finger0 = report.finger0;
     st.finger1 = report.finger1;
     st.touchpadButtonPressed = report.buttonPressed;
@@ -485,9 +499,9 @@ void MacHidGamepadAdapter::setRumbleCallback(RumbleCallback cb) {
     hub_->rumbleCb = std::move(cb);
 }
 
-void MacHidGamepadAdapter::setLightbarCallback(LightbarCallback cb) {
+void MacHidGamepadAdapter::setLightbarCallback(const LightbarCallback& cb) {
     std::lock_guard<std::mutex> lk(hub_->mtx);
-    hub_->lightbarCb = std::move(cb);
+    hub_->lightbarCb = cb;
 }
 
 void MacHidGamepadAdapter::handleOutputReport(uint32_t serial, uint32_t reportId,
@@ -534,7 +548,7 @@ bool MacHidGamepadAdapter::motionBackendOk(uint32_t) const { return true; }
 bool MacHidGamepadAdapter::submitBattery(uint32_t, const BatteryReport&) { return false; }
 bool MacHidGamepadAdapter::submitTouchpad(uint32_t, const TouchpadReport&) { return false; }
 void MacHidGamepadAdapter::setRumbleCallback(RumbleCallback) {}
-void MacHidGamepadAdapter::setLightbarCallback(LightbarCallback) {}
+void MacHidGamepadAdapter::setLightbarCallback(const LightbarCallback&) {}
 void MacHidGamepadAdapter::handleOutputReport(uint32_t, uint32_t, const uint8_t*, size_t) {}
 
 #ifdef SATELLITE_BUILD_TESTS

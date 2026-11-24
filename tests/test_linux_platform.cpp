@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +23,29 @@
 #include <vector>
 
 #include "test_util.h"
+
+#include <spawn.h>
+
+extern char** environ;
+
+namespace {
+
+// Runs `script` under /bin/bash without a shell parsing its path, and returns
+// its exit status, or -1 when it could not be started or did not exit.
+int runBash(const std::string& script) {
+    std::string bash = "/bin/bash";
+    std::string path = script;
+    char* argv[] = {bash.data(), path.data(), nullptr};
+    pid_t pid = 0;
+    if (posix_spawn(&pid, argv[0], nullptr, nullptr, argv, environ) != 0) return -1;
+    int status = 0;
+    pid_t waited = 0;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || !WIFEXITED(status)) return -1;
+    return WEXITSTATUS(status);
+}
+
+} // namespace
 
 // Fixture teardown: a tmpdir that cannot be removed is a failed test, not a
 // stray directory nobody hears about.
@@ -600,7 +624,7 @@ static void testSwapScriptSparesLiveProcess() {
         writeHelperScript(satellite::update::buildSwapScript(getpid(), dir.src, dir.dst, 2));
     EXPECT(!helper.empty());
     if (helper.empty()) return;
-    const int rc = system(("/bin/bash " + helper).c_str());
+    const int rc = runBash(helper);
 
     EXPECT(rc != 0);
     EXPECT(slurp(dir.dst) == "old\n");
@@ -629,7 +653,7 @@ static void testSwapScriptInstallsAfterProcessExits() {
         writeHelperScript(satellite::update::buildSwapScript(child, dir.src, dir.dst, 2));
     EXPECT(!helper.empty());
     if (helper.empty()) return;
-    const int rc = system(("/bin/bash " + helper).c_str());
+    const int rc = runBash(helper);
 
     EXPECT(rc == 0);
     EXPECT(slurp(dir.dst) == "#!/bin/sh\nexit 0\n");
@@ -639,33 +663,29 @@ static void testSwapScriptInstallsAfterProcessExits() {
 }
 
 int main() {
-    std::cout << "Running Linux platform tests...\n\n";
+    return satellite::test::runMain("test_linux_platform", [] {
+        std::cout << "Running Linux platform tests...\n\n";
 
-    testConfigEscapingRoundTrip();
-    testConfigPath();
-    testConfigDirOverride();
-    testAtomicWriteFile();
-    testConfigRoundTrip();
-    testDiscoveryBroadcastConfig();
-    testLoadConfigMissingFile();
-    testAutoStartEnable();
-    testAutoStartDisable();
-    testAutoStartIdempotent();
-    testGetExeDir();
-    testGetCurrentDate();
-    testFileLoggerFlush();
-    testLogDirDefault();
-    testSubmitBatteryWritesProxyFile();
-    testSubmitBatteryUnknownLevel();
-    testSetLightbarCallbackWritesProxyFile();
-    testSysfsProxyDirEnvOverride();
-    testNetlinkBatchWantsRejoin();
-    testSwapScriptSparesLiveProcess();
-    testSwapScriptInstallsAfterProcessExits();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testConfigEscapingRoundTrip();
+        testConfigPath();
+        testConfigDirOverride();
+        testAtomicWriteFile();
+        testConfigRoundTrip();
+        testDiscoveryBroadcastConfig();
+        testLoadConfigMissingFile();
+        testAutoStartEnable();
+        testAutoStartDisable();
+        testAutoStartIdempotent();
+        testGetExeDir();
+        testGetCurrentDate();
+        testFileLoggerFlush();
+        testLogDirDefault();
+        testSubmitBatteryWritesProxyFile();
+        testSubmitBatteryUnknownLevel();
+        testSetLightbarCallbackWritesProxyFile();
+        testSysfsProxyDirEnvOverride();
+        testNetlinkBatchWantsRejoin();
+        testSwapScriptSparesLiveProcess();
+        testSwapScriptInstallsAfterProcessExits();
+    });
 }

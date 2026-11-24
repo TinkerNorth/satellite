@@ -2,6 +2,7 @@
 #include "../src/net/inner_dispatch.h"
 #include "../src/core/session_service.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -39,7 +40,7 @@ struct StubGamepad : IGamepadPort {
         return false;
     }
     bool submitRelativeMouse(int, int, const MouseButtons&, int) override { return false; }
-    void setLightbarCallback(LightbarCallback) override {}
+    void setLightbarCallback(const LightbarCallback&) override {}
 
     bool busOpen = true;
     bool submitReturnVal = true;
@@ -225,7 +226,8 @@ static void test_encodeAudioFrameHeader_byteExactAndRoundTrip() {
 // speaker path has no way to tell quiet game audio from an idle endpoint.
 static void test_isDigitalSilence() {
     TEST("isDigitalSilence: all-zero is silence, any non-zero sample is not");
-    std::vector<int16_t> zeros(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    std::vector<int16_t> zeros(static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS,
+                               0);
     EXPECT(isDigitalSilence(zeros.data(), zeros.size()));
 
     for (size_t at : {(size_t)0, zeros.size() / 2, zeros.size() - 1}) {
@@ -636,7 +638,7 @@ static void test_dispatch_deletedRegistrationOpcodesAreDropped() {
 
     // 0x000E CAPS_UPDATE (idx 0, CAP_MOTION): must not rewrite caps.
     const uint16_t caps = CAP_MOTION;
-    std::vector<uint8_t> capsMsg = {0x00, (uint8_t)(caps >> 8), (uint8_t)(caps & 0xFF)};
+    std::vector<uint8_t> capsMsg = {0x00, (uint8_t)(caps >> 8U), (uint8_t)(caps & 0xFFU)};
     dispatchTight(svc, token, 0x000E, capsMsg);
     EXPECT(!svc.getConnectionsSnapshot().connections[0].controllers[0].motionCapable);
 
@@ -684,49 +686,41 @@ static void test_parseInnerHeader() {
 }
 
 int main() {
-    std::cout << "Running receiver wire-decode tests...\n\n";
+    return satellite::test::runMain("test_receiver", [] {
+        std::cout << "Running receiver wire-decode tests...\n\n";
 
-    test_decodeMotionReport_littleEndian();
-    test_decodeMotionReport_noOverRead();
-    test_decodeTouchpadReport_wireLayout();
-    test_decodeTouchpadReport_noOverRead();
-    test_decodeAudioFrameHeader_bigEndianSeq();
-    test_encodeAudioFrameHeader_byteExactAndRoundTrip();
-    test_isDigitalSilence();
-    test_micAudioWireConstants();
-    test_parseInnerHeader();
+        test_decodeMotionReport_littleEndian();
+        test_decodeMotionReport_noOverRead();
+        test_decodeTouchpadReport_wireLayout();
+        test_decodeTouchpadReport_noOverRead();
+        test_decodeAudioFrameHeader_bigEndianSeq();
+        test_encodeAudioFrameHeader_byteExactAndRoundTrip();
+        test_isDigitalSilence();
+        test_micAudioWireConstants();
+        test_parseInnerHeader();
 
-    test_dispatch_handledFlagSplitsMalformedFromUnknown();
-    test_dispatch_micAudio_truncatedRejected();
-    test_dispatch_micAudio_reachesServiceAndRateLimits();
-    test_dispatch_micAudio_unknownSlotAndToken();
+        test_dispatch_handledFlagSplitsMalformedFromUnknown();
+        test_dispatch_micAudio_truncatedRejected();
+        test_dispatch_micAudio_reachesServiceAndRateLimits();
+        test_dispatch_micAudio_unknownSlotAndToken();
 
-    test_dispatch_motion_truncatedRejected();
-    test_dispatch_motion_exactLengthAccepted();
-    test_dispatch_motion_oversizedAccepted();
+        test_dispatch_motion_truncatedRejected();
+        test_dispatch_motion_exactLengthAccepted();
+        test_dispatch_motion_oversizedAccepted();
 
-    test_dispatch_battery_truncatedRejected();
-    test_dispatch_battery_exactLengthAccepted();
+        test_dispatch_battery_truncatedRejected();
+        test_dispatch_battery_exactLengthAccepted();
 
-    test_dispatch_touchpad_truncatedRejected();
-    test_dispatch_touchpad_exactLengthAccepted();
+        test_dispatch_touchpad_truncatedRejected();
+        test_dispatch_touchpad_exactLengthAccepted();
 
-    test_dispatch_gamepad_truncatedRejected();
-    test_dispatch_gamepad_exactLengthAccepted();
+        test_dispatch_gamepad_truncatedRejected();
+        test_dispatch_gamepad_exactLengthAccepted();
 
-    test_dispatch_unknownTypeIgnored();
-    test_dispatch_heartbeatZeroLength();
+        test_dispatch_unknownTypeIgnored();
+        test_dispatch_heartbeatZeroLength();
 
-    test_dispatch_deletedRegistrationOpcodesAreDropped();
-    test_dispatch_gamepad_backendRejectReportsNotOk();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        test_dispatch_deletedRegistrationOpcodesAreDropped();
+        test_dispatch_gamepad_backendRejectReportsNotOk();
+    });
 }

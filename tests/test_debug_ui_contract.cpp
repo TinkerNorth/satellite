@@ -37,7 +37,7 @@ static std::string webPath(const std::string& relative) {
 static std::string readFileAll(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()};
 }
 
 static std::vector<std::string> firstGroups(const std::string& text, const std::regex& pattern) {
@@ -50,7 +50,7 @@ static std::vector<std::string> firstGroups(const std::string& text, const std::
 }
 
 static std::set<std::string> distinct(const std::vector<std::string>& values) {
-    return std::set<std::string>(values.begin(), values.end());
+    return {values.begin(), values.end()};
 }
 
 // The row table alone: the page's other readers (the backend list, the
@@ -125,19 +125,11 @@ static void test_the_haptic_renderings_are_told_apart() {
 }
 
 int main() {
-    std::cout << "Running debug UI contract tests...\n\n";
-    test_scan_sees_the_reads();
-    test_direct_fields_are_written();
-    test_grouped_fields_are_written();
-    test_the_haptic_renderings_are_told_apart();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_debug_ui_contract", [] {
+        std::cout << "Running debug UI contract tests...\n\n";
+        test_scan_sees_the_reads();
+        test_direct_fields_are_written();
+        test_grouped_fields_are_written();
+        test_the_haptic_renderings_are_told_apart();
+    });
 }

@@ -85,7 +85,7 @@ class FakeComBackend : public GuardBackend {
     std::atomic<int> snapshotsDone_{0};
     std::atomic<int> restores_{0};
     std::atomic<bool> keepPolling_{true};
-    std::atomic<int> stopAfter_{1 << 30};
+    std::atomic<int> stopAfter_{1U << 30U};
     milliseconds snapshotDelay_{0};
     mutable std::mutex threadsMtx_;
     std::set<std::thread::id> threads_;
@@ -268,23 +268,15 @@ static void test_destroying_the_worker_ends_an_open_window() {
 }
 
 int main() {
-    test_the_snapshot_is_taken_on_the_worker_before_the_plug_goes_on();
-    test_the_restore_polls_run_on_the_same_worker();
-    test_a_stuck_snapshot_costs_the_plug_the_deadline_and_no_more();
-    test_a_plug_waiting_on_a_snapshot_holds_no_lock();
-    test_the_window_polls_its_budget_and_no_more();
-    test_a_plug_inside_an_open_window_keeps_its_snapshot();
-    test_a_second_plug_restarts_the_budget();
-    test_the_setting_that_turns_the_guard_off_is_honoured();
-    test_destroying_the_worker_ends_an_open_window();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_audio_guard_worker", [] {
+        test_the_snapshot_is_taken_on_the_worker_before_the_plug_goes_on();
+        test_the_restore_polls_run_on_the_same_worker();
+        test_a_stuck_snapshot_costs_the_plug_the_deadline_and_no_more();
+        test_a_plug_waiting_on_a_snapshot_holds_no_lock();
+        test_the_window_polls_its_budget_and_no_more();
+        test_a_plug_inside_an_open_window_keeps_its_snapshot();
+        test_a_second_plug_restarts_the_budget();
+        test_the_setting_that_turns_the_guard_off_is_honoured();
+        test_destroying_the_worker_ends_an_open_window();
+    });
 }

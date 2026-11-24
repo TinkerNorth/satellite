@@ -3,10 +3,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <optional>
-#include <vector>
 
 namespace satellite::bench {
+
+// XInput's four user slots (XUSER_MAX_COUNT). A fixed count rather than a
+// runtime one: the bound every lookup checks is then a constant the
+// compiler can prove, where GCC 16 reported the guarded out-of-range path
+// of a vector-backed table as an out-of-bounds access (-Warray-bounds).
+inline constexpr size_t PAUSE_DETECTOR_SLOTS = 4;
 
 struct Pause {
     double startMs = 0.0;
@@ -32,7 +38,7 @@ struct SlotSummary {
 
 class PauseDetector {
   public:
-    PauseDetector(size_t slotCount, double gapMs) : slots_(slotCount), gapMs_(gapMs) {}
+    explicit PauseDetector(double gapMs) : gapMs_(gapMs) {}
 
     double gapMs() const { return gapMs_; }
 
@@ -99,7 +105,7 @@ class PauseDetector {
         return pause;
     }
 
-    std::vector<Slot> slots_;
+    std::array<Slot, PAUSE_DETECTOR_SLOTS> slots_{};
     const double gapMs_;
 };
 

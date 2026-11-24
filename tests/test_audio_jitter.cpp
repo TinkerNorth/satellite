@@ -25,7 +25,8 @@ using Accept = AudioJitterWindow::Accept;
 // distinctive byte: it makes "the window handed back the packet I pushed" an
 // assertion rather than a hope.
 std::vector<uint8_t> packet(uint8_t tag, size_t bytes = 24) {
-    return std::vector<uint8_t>(bytes, tag);
+    std::vector<uint8_t> out(bytes, tag); // a count of copies, not a two-byte list
+    return out;
 }
 
 AudioJitterWindow::Result push(AudioJitterWindow& w, uint16_t seq, const std::vector<uint8_t>& p) {
@@ -39,7 +40,7 @@ std::string shape(const AudioJitterWindow::Result& r) {
     std::string s;
     for (int i = 0; i < r.count; i++) {
         const AudioJitterWindow::Event& e = r.events[i];
-        if (!s.empty()) s += " ";
+        if (!s.empty()) s += ' ';
         s += (e.kind == Kind::Packet ? "P" : "G");
         s += std::to_string(e.seq);
         if (e.kind == Kind::Gap && e.fecCarrier != nullptr) s += "/F";
@@ -234,7 +235,7 @@ void test_wrap_inOrderAcrossZero() {
     AudioJitterWindow w;
     const uint16_t start = 0xFFFD;
     for (int i = 0; i < 6; i++) {
-        const uint16_t seq = static_cast<uint16_t>(start + i);
+        const auto seq = static_cast<uint16_t>(start + i);
         const auto r = push(w, seq, packet(static_cast<uint8_t>(0x50 + i)));
         EXPECT(r.accept == Accept::Ok);
         EXPECT_EQ(r.count, 1);
@@ -273,10 +274,11 @@ void test_longDropout_concealsThenResyncs() {
     int gaps = 0;
     int packets = 0;
     for (int i = 0; i < resume.count; i++) {
-        if (resume.events[i].kind == Kind::Gap)
+        if (resume.events[i].kind == Kind::Gap) {
             gaps++;
-        else
+        } else {
             packets++;
+        }
     }
     EXPECT_EQ(gaps, AUDIO_JITTER_MAX_CONCEAL_FRAMES);
     EXPECT_EQ(packets, 1);
@@ -351,30 +353,22 @@ void test_reset_startsAFreshStream() {
 } // namespace
 
 int main() {
-    std::cout << "Running audio jitter-window tests...\n\n";
-    test_inOrder_passesThrough();
-    test_firstPacketPrimes_anySeq();
-    test_singleReorder_heals();
-    test_lostFrame_becomesGapWithFecCarrier();
-    test_twoLostFrames_concealThenRecover();
-    test_lateFrame_isDropped();
-    test_duplicateOfHeldFrame_isDropped();
-    test_malformedPackets_rejected();
-    test_wrap_inOrderAcrossZero();
-    test_wrap_reorderAndGapAcrossZero();
-    test_longDropout_concealsThenResyncs();
-    test_concealRunResetsAfterGoodFrame();
-    test_windowNeverHoldsMoreThanOneFrame();
-    test_eventsNeverOverrunTheResultArray();
-    test_reset_startsAFreshStream();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_audio_jitter", [] {
+        std::cout << "Running audio jitter-window tests...\n\n";
+        test_inOrder_passesThrough();
+        test_firstPacketPrimes_anySeq();
+        test_singleReorder_heals();
+        test_lostFrame_becomesGapWithFecCarrier();
+        test_twoLostFrames_concealThenRecover();
+        test_lateFrame_isDropped();
+        test_duplicateOfHeldFrame_isDropped();
+        test_malformedPackets_rejected();
+        test_wrap_inOrderAcrossZero();
+        test_wrap_reorderAndGapAcrossZero();
+        test_longDropout_concealsThenResyncs();
+        test_concealRunResetsAfterGoodFrame();
+        test_windowNeverHoldsMoreThanOneFrame();
+        test_eventsNeverOverrunTheResultArray();
+        test_reset_startsAFreshStream();
+    });
 }

@@ -269,26 +269,18 @@ static void test_sseEventFraming() {
 }
 
 int main() {
-    std::cout << "Running status JSON tests...\n\n";
-    test_status_exact_shape();
-    test_status_carries_controller_audio();
-    test_status_carries_the_audio_directions();
-    test_debug_exact_shape();
-    test_sse_exact_shape();
-    test_counterBlocksStayOffTheHotSurfaces();
-    test_senderIpLabel();
-    test_sseEventFraming();
-    test_update_exact_shape();
-    test_update_carries_the_dismissal();
-    test_update_names_the_phase_and_the_install_method();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_status_json", [] {
+        std::cout << "Running status JSON tests...\n\n";
+        test_status_exact_shape();
+        test_status_carries_controller_audio();
+        test_status_carries_the_audio_directions();
+        test_debug_exact_shape();
+        test_sse_exact_shape();
+        test_counterBlocksStayOffTheHotSurfaces();
+        test_senderIpLabel();
+        test_sseEventFraming();
+        test_update_exact_shape();
+        test_update_carries_the_dismissal();
+        test_update_names_the_phase_and_the_install_method();
+    });
 }

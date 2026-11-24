@@ -26,14 +26,10 @@ static void testNewStatusIndicatorStartsPassive() {
 }
 
 int main() {
-    std::cout << "Running tray indicator tests...\n\n";
+    return satellite::test::runMain("test_tray_indicator", [] {
+        std::cout << "Running tray indicator tests...\n\n";
 
-    testNewStatusIndicatorCarriesItsIdentity();
-    testNewStatusIndicatorStartsPassive();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testNewStatusIndicatorCarriesItsIdentity();
+        testNewStatusIndicatorStartsPassive();
+    });
 }

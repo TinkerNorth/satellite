@@ -105,10 +105,23 @@
   <!--
     No <screenshots> block yet. Screenshot URLs must resolve over HTTPS or
     networked validation fails, and none are published. Flathub requires at
-    least one; add them before any Flathub submission. See docs/packaging.md.
+    least one; add them before any Flathub submission. See docs/PACKAGING.md.
   -->
 
   <releases>
+    <release version="2.4.0" date="2026-11-23">
+      <description>
+        <p>Arch and Fedora users can install Satellite from its repositories again.</p>
+        <ul>
+          <li>The pacman package carries the whole AppImage again, so Satellite starts on Arch</li>
+          <li>The DNF repository's package is signed, so dnf installs it with signature checks on</li>
+          <li>On Windows, a link inside the dashboard's folder can no longer serve a file outside it</li>
+          <li>The Linux updater tells an Arch install to upgrade with pacman</li>
+          <li>Every release file carries a Sigstore signature bundle, and each package a list of the components it contains</li>
+        </ul>
+      </description>
+      <url type="details">https://github.com/TinkerNorth/satellite/releases/tag/2.4.0</url>
+    </release>
     <release version="2.3.0" date="2026-11-23">
       <description>
         <p>Satellite reads the Dish fleet's controller database and can test each controller from the dashboard.</p>
