@@ -39,6 +39,9 @@ namespace crash = satellite::crash;
 
 #include <sys/stat.h>
 
+#include <cstdlib>
+#include <exception>
+
 #import <AppKit/AppKit.h>
 
 // Cocoa delegate: clean shutdown on terminate.
@@ -48,7 +51,7 @@ namespace crash = satellite::crash;
 @implementation SatelliteAppDelegate
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
     g_appRunning = false;
-    g_httpServer.stop();
+    adminHttpServer().stop();
     if (g_clientServer != nullptr) g_clientServer->stop();
     const bool saved = g_configStore->flush(std::chrono::seconds(2));
     if (!saved) {
@@ -99,7 +102,7 @@ static Config loadConfigSeedingAutostart() {
 // non-bundle / dev builds.
 static std::string resolveWebDir() {
     const std::string exeDir = getExeDir();
-    const std::string bundled = exeDir + "/../Resources/web";
+    std::string bundled = exeDir + "/../Resources/web"; // returned, so movable
     struct stat st;
     if (stat(bundled.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return bundled;
     return exeDir + "/web";
@@ -152,7 +155,7 @@ static void runApp(SatelliteAppDelegate* delegate) {
 // Long on purpose: the composition root. Every collaborator lives on this
 // stack in the order it must be constructed, and the shutdown below mirrors
 // that order; a helper per step would move the lifetimes out of sight.
-int main() {
+static int runSatellite() {
     @autoreleasepool {
         ScopedThreadRole role(ThreadRole::Gui);
         logBackendAvailability();
@@ -214,4 +217,19 @@ int main() {
         netShutdown();
     }
     return 0;
+}
+
+// The process boundary: an exception nothing below handled is still a crash,
+// so the crash reporter records it, and stderr says what was thrown first.
+int main() {
+    try {
+        return runSatellite();
+    } catch (const std::exception& e) {
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] fatal: uncaught exception: %s\n", e.what()));
+    } catch (...) {
+        satellite::io::stderrWritten(
+            std::fprintf(stderr, "[satellite] fatal: uncaught non-standard exception\n"));
+    }
+    std::abort();
 }
