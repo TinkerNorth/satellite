@@ -30,7 +30,9 @@ if [ "$(uname -s)" = Darwin ]; then
     extra=(--extra-arg=-isysroot --extra-arg="$(xcrun --show-sdk-path)")
 fi
 
-files="$(python3 - "${db}" <<'PY'
+python=python3
+command -v python3 >/dev/null 2>&1 || python=python
+files="$("${python}" - "${db}" <<'PY'
 import json, os, sys
 root = os.getcwd()
 seen = set()
