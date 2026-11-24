@@ -113,6 +113,7 @@ struct MacHidGamepadAdapter::Slot {
     uint8_t touchPacketSeq = 0; // next touch frame counter (use-then-increment)
     std::chrono::steady_clock::time_point lastSubmit{};
     uint8_t buf[DS4V2_INPUT_REPORT_BYTES] = {};
+    std::unique_ptr<Slot> nextQuarantined; // see MacHidGamepadAdapter::quarantined_
 };
 
 // Everything a kernel set-report block may touch, shared so the block can
@@ -170,16 +171,18 @@ bool MacHidGamepadAdapter::ensureBusOpen() {
 }
 
 void MacHidGamepadAdapter::closeBus() {
-    std::vector<uint32_t> serials;
-    {
-        std::lock_guard<TrackedMutex> lk(mtx_);
-        serials.reserve(slots_.size());
-        for (auto& [serial, _] : slots_) serials.push_back(serial);
-    }
     // An unconfirmed teardown has no SessionService to quarantine it here
     // (the bus is going away), so the count is what is left to report.
     size_t unconfirmed = 0;
-    for (uint32_t serial : serials) {
+    for (;;) {
+        uint32_t serial = 0;
+        {
+            std::lock_guard<TrackedMutex> lk(mtx_);
+            if (slots_.empty()) break;
+            serial = slots_.begin()->first;
+        }
+        // unplugDevice takes the slot out of slots_ whether or not the cancel
+        // confirms (plugCommon admits only valid serials), so this ends.
         if (!unplugDevice(serial)) unconfirmed++;
     }
     if (unconfirmed != 0) {
@@ -379,7 +382,8 @@ bool MacHidGamepadAdapter::unplugDevice(uint32_t serial) {
                      "serial will be quarantined\n",
                      serial);
         std::lock_guard<TrackedMutex> lk(mtx_);
-        quarantined_.push_back(std::move(slot));
+        slot->nextQuarantined = std::move(quarantined_);
+        quarantined_ = std::move(slot);
         return false;
     }
     CFRelease(slot->device);

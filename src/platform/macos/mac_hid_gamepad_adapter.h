@@ -151,6 +151,8 @@ class MacHidGamepadAdapter : public IGamepadPort {
     std::unordered_map<uint32_t, std::unique_ptr<Slot>> slots_;
     // Slots whose cancel never confirmed. Out of slots_, so unreachable by any
     // submit; their kernel refs are never released (see the locking protocol).
-    std::vector<std::unique_ptr<Slot>> quarantined_;
+    // A list linked through Slot::nextQuarantined, so quarantining a slot never
+    // allocates and closeBus, which the destructor runs, cannot throw.
+    std::unique_ptr<Slot> quarantined_;
     std::shared_ptr<CallbackHub> hub_;
 };
