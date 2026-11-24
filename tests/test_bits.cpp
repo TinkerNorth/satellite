@@ -98,22 +98,14 @@ static void test_pow2() {
 }
 
 int main() {
-    test_a_byte_widens_keeping_its_top_bit();
-    test_loads_assemble_every_boundary_byte();
-    test_packed_12_bit_fields();
-    test_stores_split_a_word();
-    test_the_signed_view_is_twos_complement();
-    test_narrowing_and_nibbles();
-    test_packing_two_ids();
-    test_pow2();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_bits", [] {
+        test_a_byte_widens_keeping_its_top_bit();
+        test_loads_assemble_every_boundary_byte();
+        test_packed_12_bit_fields();
+        test_stores_split_a_word();
+        test_the_signed_view_is_twos_complement();
+        test_narrowing_and_nibbles();
+        test_packing_two_ids();
+        test_pow2();
+    });
 }

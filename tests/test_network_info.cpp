@@ -279,18 +279,17 @@ static void test_buildJson_firewall() {
 }
 
 int main() {
-    test_isPrivateIPv4_ranges();
-    test_isPrivateIPv4_malformed();
-    test_pickAuto_priority();
-    test_pickAuto_order_and_empty();
-    test_chooseInterface();
-    test_buildJson_empty();
-    test_buildJson_topLevel();
-    test_buildJson_interfaces();
-    test_buildJson_flags();
-    test_buildJson_escaping();
-    test_buildJson_firewall();
-
-    std::cout << "network_info: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("network_info", [] {
+        test_isPrivateIPv4_ranges();
+        test_isPrivateIPv4_malformed();
+        test_pickAuto_priority();
+        test_pickAuto_order_and_empty();
+        test_chooseInterface();
+        test_buildJson_empty();
+        test_buildJson_topLevel();
+        test_buildJson_interfaces();
+        test_buildJson_flags();
+        test_buildJson_escaping();
+        test_buildJson_firewall();
+    });
 }

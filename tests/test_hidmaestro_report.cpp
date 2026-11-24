@@ -989,40 +989,39 @@ static void test_decode_switch_rumble() {
 }
 
 int main() {
-    test_profile_mapping();
-    test_profile_audio_matrix();
-    test_x360_neutral_report();
-    test_x360_sticks_roundtrip_extremes();
-    test_x360_buttons_and_hat();
-    test_x360_triggers();
-    test_gip_roundtrip();
-    test_sony_imu_rescale();
-    test_ds4_payload();
-    test_ds5_payload_neutral();
-    test_ds5_payload_buttons_motion_touch();
-    test_ds5_mic_mute_button_bit();
-    test_ds5_edge_payload();
-    test_extended_buttons_dropped_where_there_is_no_room();
-    test_mic_mute_bit_ignored_by_other_identities();
-    test_switch_body_neutral();
-    test_switch_body_buttons_positional();
-    test_switch_body_sticks_and_imu();
-    test_switch_body_capture_from_misc1();
-    test_decode_xinput_rumble();
-    test_decode_ds4_output();
-    test_decode_ds5_output();
-    test_decode_ds5_edge_output();
-    test_decode_ds5_trigger_effects();
-    test_decode_ds5_player_leds();
-    test_decode_ds5_lightbar_valid_flag1();
-    test_decode_ds5_v2_rumble_has_no_lightbar();
-    test_decode_ds5_compatible_vibration2_alone_is_rumble();
-    test_decode_ds5_valid_flag2_is_not_a_lightbar_enable();
-    test_decode_ds5_mic_led();
-    test_decode_ds5_mic_led_coexists();
-    test_decode_switch_player_leds();
-    test_decode_switch_rumble();
-
-    std::cout << "hidmaestro_report: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("hidmaestro_report", [] {
+        test_profile_mapping();
+        test_profile_audio_matrix();
+        test_x360_neutral_report();
+        test_x360_sticks_roundtrip_extremes();
+        test_x360_buttons_and_hat();
+        test_x360_triggers();
+        test_gip_roundtrip();
+        test_sony_imu_rescale();
+        test_ds4_payload();
+        test_ds5_payload_neutral();
+        test_ds5_payload_buttons_motion_touch();
+        test_ds5_mic_mute_button_bit();
+        test_ds5_edge_payload();
+        test_extended_buttons_dropped_where_there_is_no_room();
+        test_mic_mute_bit_ignored_by_other_identities();
+        test_switch_body_neutral();
+        test_switch_body_buttons_positional();
+        test_switch_body_sticks_and_imu();
+        test_switch_body_capture_from_misc1();
+        test_decode_xinput_rumble();
+        test_decode_ds4_output();
+        test_decode_ds5_output();
+        test_decode_ds5_edge_output();
+        test_decode_ds5_trigger_effects();
+        test_decode_ds5_player_leds();
+        test_decode_ds5_lightbar_valid_flag1();
+        test_decode_ds5_v2_rumble_has_no_lightbar();
+        test_decode_ds5_compatible_vibration2_alone_is_rumble();
+        test_decode_ds5_valid_flag2_is_not_a_lightbar_enable();
+        test_decode_ds5_mic_led();
+        test_decode_ds5_mic_led_coexists();
+        test_decode_switch_player_leds();
+        test_decode_switch_rumble();
+    });
 }

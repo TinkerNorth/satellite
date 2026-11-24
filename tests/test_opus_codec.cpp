@@ -586,30 +586,22 @@ void test_speakerEncoderDoesNotUseDtx() {
 } // namespace
 
 int main() {
-    std::cout << "Running Opus codec tests...\n\n";
-    test_micRoundTrip_preservesFrameAndSignal();
-    test_speakerRoundTrip_keepsBothChannels();
-    test_encodeRejectsWrongWindow();
-    test_decodeRejectsMalformedInput();
-    test_decodeRefusesAPacketLongerThanTheWireWindow();
-    test_conceal_producesAFrameForNothing();
-    test_fecRecoversALostFrame();
-    test_speakerEncodesEveryPacketAsHybrid();
-    test_speakerFecRecoversALostFrame();
-    test_decodeFecFallsBackToConcealment();
-    test_factoryPinsTheStreamFormats();
-    test_encoderRespectsTheOutputCeiling();
-    test_micEncoderUsesDtxOnSilence();
-    test_micEncoderKeepsSpeechIntact();
-    test_speakerEncoderDoesNotUseDtx();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_opus_codec", [] {
+        std::cout << "Running Opus codec tests...\n\n";
+        test_micRoundTrip_preservesFrameAndSignal();
+        test_speakerRoundTrip_keepsBothChannels();
+        test_encodeRejectsWrongWindow();
+        test_decodeRejectsMalformedInput();
+        test_decodeRefusesAPacketLongerThanTheWireWindow();
+        test_conceal_producesAFrameForNothing();
+        test_fecRecoversALostFrame();
+        test_speakerEncodesEveryPacketAsHybrid();
+        test_speakerFecRecoversALostFrame();
+        test_decodeFecFallsBackToConcealment();
+        test_factoryPinsTheStreamFormats();
+        test_encoderRespectsTheOutputCeiling();
+        test_micEncoderUsesDtxOnSilence();
+        test_micEncoderKeepsSpeechIntact();
+        test_speakerEncoderDoesNotUseDtx();
+    });
 }

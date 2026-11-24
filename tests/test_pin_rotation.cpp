@@ -245,29 +245,26 @@ static void testPinBurnsAfterMaxFails() {
 }
 
 int main() {
-    std::cout << "Running PIN rotation / shared-crypto-helper tests...\n\n";
+    return satellite::test::runMain("test_pin_rotation", []() -> int {
+        std::cout << "Running PIN rotation / shared-crypto-helper tests...\n\n";
 
-    if (!sodiumInit()) {
-        std::cerr << "sodium init failed\n";
-        return 1;
-    }
-    TEST("sodiumInit: idempotent");
-    EXPECT(sodiumInit());
+        if (!sodiumInit()) {
+            std::cerr << "sodium init failed\n";
+            return 1;
+        }
+        TEST("sodiumInit: idempotent");
+        EXPECT(sodiumInit());
 
-    testRandomHelpers();
-    testHexDecoder();
-    testKeyExchange();
-    testGenerateToken();
-    testPinSnapshotInitial();
-    testPinRotationKeepsPrevious();
-    testPinStaleRotationDropsPrevious();
-    testVerifyPinConsumesAndFlashes();
-    testPinRejectsWrongGuesses();
-    testPinBurnsAfterMaxFails();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testRandomHelpers();
+        testHexDecoder();
+        testKeyExchange();
+        testGenerateToken();
+        testPinSnapshotInitial();
+        testPinRotationKeepsPrevious();
+        testPinStaleRotationDropsPrevious();
+        testVerifyPinConsumesAndFlashes();
+        testPinRejectsWrongGuesses();
+        testPinBurnsAfterMaxFails();
+        return 0;
+    });
 }

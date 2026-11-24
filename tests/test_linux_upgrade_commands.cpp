@@ -50,16 +50,8 @@ static void test_the_document_names_the_commands_the_updater_shows() {
 }
 
 int main() {
-    test_arch_users_upgrade_with_pacman();
-    test_the_document_names_the_commands_the_updater_shows();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_linux_upgrade_commands", [] {
+        test_arch_users_upgrade_with_pacman();
+        test_the_document_names_the_commands_the_updater_shows();
+    });
 }

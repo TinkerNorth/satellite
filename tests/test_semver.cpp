@@ -4,23 +4,7 @@
 #include <iostream>
 #include <string>
 
-static int g_pass = 0;
-static int g_fail = 0;
-static std::string g_currentTest;
-
-#define TEST(name)                                                                                 \
-    do { g_currentTest = (name); } while (0)
-
-#define EXPECT(cond)                                                                               \
-    do {                                                                                           \
-        if (cond) {                                                                                \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #cond << "\n";                                                    \
-        }                                                                                          \
-    } while (0)
+#include "test_util.h"
 
 using satellite::compareDottedVersion;
 using satellite::compareSemver;
@@ -175,21 +159,17 @@ static void testDottedVersion() {
 }
 
 int main() {
-    std::cout << "Running semver tests...\n\n";
+    return satellite::test::runMain("test_semver", [] {
+        std::cout << "Running semver tests...\n\n";
 
-    testCoreOrdering();
-    testReleaseVsPrerelease();
-    testPrereleaseNumericOrdering();
-    testPrereleaseIdentifierCounts();
-    testPrereleaseNumericVsAlpha();
-    testSemverSpecChain();
-    testMalformedComponents();
-    testAntisymmetry();
-    testDottedVersion();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testCoreOrdering();
+        testReleaseVsPrerelease();
+        testPrereleaseNumericOrdering();
+        testPrereleaseIdentifierCounts();
+        testPrereleaseNumericVsAlpha();
+        testSemverSpecChain();
+        testMalformedComponents();
+        testAntisymmetry();
+        testDottedVersion();
+    });
 }

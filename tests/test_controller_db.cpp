@@ -541,28 +541,28 @@ static void test_mirror_manifest_lists_only_held_files() {
 }
 
 int main() {
-    test_requires_makes_a_record_inert();
-    test_mirror_manifest_lists_only_held_files();
-    test_mirror_file();
-    test_if_none_match();
-    test_bundled_copy_parses_whole();
-    test_index_resolves_usb_ids();
-    test_index_resolves_bluetooth_ids();
-    test_index_keeps_every_record_of_a_shared_id();
-    test_unknown_id_finds_nothing();
-    test_document_shape_errors();
-    test_unknown_fields_are_ignored();
-    test_record_missing_a_required_section_is_dropped();
-    test_record_with_unreadable_section_is_dropped();
-    test_issue_without_id_is_skipped();
-    test_verification_names_round_trip();
-    test_strings_parse_and_fallback();
-    test_bundled_strings_fall_back_to_en();
-    test_manifest_paths();
-    test_manifest_parse();
-    test_file_check();
-    test_snapshot_builds();
-    test_names();
-    std::cout << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_controller_db", [] {
+        test_requires_makes_a_record_inert();
+        test_mirror_manifest_lists_only_held_files();
+        test_mirror_file();
+        test_if_none_match();
+        test_bundled_copy_parses_whole();
+        test_index_resolves_usb_ids();
+        test_index_resolves_bluetooth_ids();
+        test_index_keeps_every_record_of_a_shared_id();
+        test_unknown_id_finds_nothing();
+        test_document_shape_errors();
+        test_unknown_fields_are_ignored();
+        test_record_missing_a_required_section_is_dropped();
+        test_record_with_unreadable_section_is_dropped();
+        test_issue_without_id_is_skipped();
+        test_verification_names_round_trip();
+        test_strings_parse_and_fallback();
+        test_bundled_strings_fall_back_to_en();
+        test_manifest_paths();
+        test_manifest_parse();
+        test_file_check();
+        test_snapshot_builds();
+        test_names();
+    });
 }

@@ -99,11 +99,11 @@ static void test_output_lanes() {
 }
 
 int main() {
-    test_input_counts_from_the_plug();
-    test_input_rate_per_sample();
-    test_input_sample_without_time();
-    test_input_facts();
-    test_output_lanes();
-    std::cout << "controller_activity: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("controller_activity", [] {
+        test_input_counts_from_the_plug();
+        test_input_rate_per_sample();
+        test_input_sample_without_time();
+        test_input_facts();
+        test_output_lanes();
+    });
 }

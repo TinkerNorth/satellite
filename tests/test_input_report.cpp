@@ -294,22 +294,14 @@ void testExtButtonTable() {
 } // namespace
 
 int main() {
-    std::cout << "Running INPUT report tests...\n\n";
-    testDecoder();
-    testWireSizes();
-    testDispatch();
-    testSettledVersionIsNotAGate();
-    testEveryBitReachesTheBackendWhole();
-    testPortDefaultDrops();
-    testExtButtonTable();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_input_report", [] {
+        std::cout << "Running INPUT report tests...\n\n";
+        testDecoder();
+        testWireSizes();
+        testDispatch();
+        testSettledVersionIsNotAGate();
+        testEveryBitReachesTheBackendWhole();
+        testPortDefaultDrops();
+        testExtButtonTable();
+    });
 }

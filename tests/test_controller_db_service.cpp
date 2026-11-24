@@ -418,16 +418,16 @@ static void test_worker_runs_a_requested_check() {
 }
 
 int main() {
-    test_manifest_decision();
-    test_cache_supersedes();
-    test_cadence();
-    test_result_names();
-    test_load();
-    test_check_off();
-    test_check_up_to_date();
-    test_check_updates();
-    test_check_failures_keep_the_active_copy();
-    test_worker_runs_a_requested_check();
-    std::cout << "controller_db_service: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("controller_db_service", [] {
+        test_manifest_decision();
+        test_cache_supersedes();
+        test_cadence();
+        test_result_names();
+        test_load();
+        test_check_off();
+        test_check_up_to_date();
+        test_check_updates();
+        test_check_failures_keep_the_active_copy();
+        test_worker_runs_a_requested_check();
+    });
 }

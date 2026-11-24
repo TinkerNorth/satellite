@@ -800,35 +800,34 @@ static void test_buildBackendsJson_driver_version_fields() {
 }
 
 int main() {
-    test_latencyTier_names_and_ranks();
-    test_driverVersionState_derivation();
-    test_bundled_pins_are_the_driver_binaries_not_the_installers();
-    test_buildBackendsJson_driver_version_fields();
-    test_buildBackendsJson_parses_and_agrees_with_itself();
-    test_estimateCost_matches_the_documented_table();
-    test_derived_tier_separates_rows_within_one_backend();
-    test_buildBackendsJson_audio_reflects_the_setting();
-    test_buildBackendsJson_lifecycle_and_submit_latency();
-    test_buildBackendsJson_stays_backwards_compatible();
-    test_descriptorById_known_and_unknown();
-    test_cross_backend_latency_is_comparable();
-    test_hidmaestro_widens_the_windows_type_set();
-    test_buildBackendsJson_available_backend();
-    test_buildBackendsJson_unavailable_backend();
-    test_buildBackendsJson_skips_unknown_ids();
-    test_buildBackendsJson_empty_and_multi();
-    test_deriveCatalogTraits_windows_union();
-    test_deriveCatalogTraits_order_decides_requires();
-    test_uinput_advertises_no_lightbar_it_cannot_deliver();
-    test_rawOutput_surfaces_hidmaestro_only();
-    test_controllerAudio_surfaces_hidmaestroSonyOnly();
-    test_extendedButtons_surface_where_a_persona_has_room();
-    test_dualSenseEdge_is_the_dualsense_plus_its_back_buttons();
-    test_deriveCatalogTraits_uinput_matches_legacy();
-    test_deriveCatalogTraits_machid_matches_legacy();
-    test_deriveCatalogTraits_ignores_availability();
-    test_deriveCatalogTraits_empty_and_unknown();
-
-    std::cout << "backend_registry: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("backend_registry", [] {
+        test_latencyTier_names_and_ranks();
+        test_driverVersionState_derivation();
+        test_bundled_pins_are_the_driver_binaries_not_the_installers();
+        test_buildBackendsJson_driver_version_fields();
+        test_buildBackendsJson_parses_and_agrees_with_itself();
+        test_estimateCost_matches_the_documented_table();
+        test_derived_tier_separates_rows_within_one_backend();
+        test_buildBackendsJson_audio_reflects_the_setting();
+        test_buildBackendsJson_lifecycle_and_submit_latency();
+        test_buildBackendsJson_stays_backwards_compatible();
+        test_descriptorById_known_and_unknown();
+        test_cross_backend_latency_is_comparable();
+        test_hidmaestro_widens_the_windows_type_set();
+        test_buildBackendsJson_available_backend();
+        test_buildBackendsJson_unavailable_backend();
+        test_buildBackendsJson_skips_unknown_ids();
+        test_buildBackendsJson_empty_and_multi();
+        test_deriveCatalogTraits_windows_union();
+        test_deriveCatalogTraits_order_decides_requires();
+        test_uinput_advertises_no_lightbar_it_cannot_deliver();
+        test_rawOutput_surfaces_hidmaestro_only();
+        test_controllerAudio_surfaces_hidmaestroSonyOnly();
+        test_extendedButtons_surface_where_a_persona_has_room();
+        test_dualSenseEdge_is_the_dualsense_plus_its_back_buttons();
+        test_deriveCatalogTraits_uinput_matches_legacy();
+        test_deriveCatalogTraits_machid_matches_legacy();
+        test_deriveCatalogTraits_ignores_availability();
+        test_deriveCatalogTraits_empty_and_unknown();
+    });
 }

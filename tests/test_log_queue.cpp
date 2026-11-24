@@ -238,11 +238,10 @@ void testConcurrentDelivery() {
 } // namespace
 
 int main() {
-    testRecordRoundTrip();
-    testTruncation();
-    testFullQueue();
-    testConcurrentDelivery();
-
-    std::cout << "test_log_queue: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_log_queue", [] {
+        testRecordRoundTrip();
+        testTruncation();
+        testFullQueue();
+        testConcurrentDelivery();
+    });
 }

@@ -406,18 +406,18 @@ static void test_bundle_log_tail() {
 }
 
 int main() {
-    test_redact_config();
-    test_redact_any_document();
-    test_alias_hosts();
-    test_scrub_text();
-    test_scrub_text_one_pass();
-    test_scrub_ipv6();
-    test_alias_hosts_reuse();
-    test_alias_machine();
-    test_iso_utc();
-    test_bundle_envelope();
-    test_bundle_controller_input_output();
-    test_bundle_log_tail();
-    std::cout << "diagnostics_bundle: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("diagnostics_bundle", [] {
+        test_redact_config();
+        test_redact_any_document();
+        test_alias_hosts();
+        test_scrub_text();
+        test_scrub_text_one_pass();
+        test_scrub_ipv6();
+        test_alias_hosts_reuse();
+        test_alias_machine();
+        test_iso_utc();
+        test_bundle_envelope();
+        test_bundle_controller_input_output();
+        test_bundle_log_tail();
+    });
 }

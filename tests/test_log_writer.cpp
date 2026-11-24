@@ -580,21 +580,20 @@ void testRingNumbering() {
 } // namespace
 
 int main() {
-    testLineFormat();
-    testWarnWakesAndBatches();
-    testErrFlushesAtOnce();
-    testInfoWithinTheWindow();
-    testIntervalFlush();
-    testDropsInOrder();
-    testOneDropReadsAsOne();
-    testFlushMeansFlushed();
-    testFlushOnABlockedSink();
-    testFailedWrite();
-    testRotationAndRetention();
-    testStopDrains();
-    testRingOnlyRecords();
-    testRingNumbering();
-
-    std::cout << "test_log_writer: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_log_writer", [] {
+        testLineFormat();
+        testWarnWakesAndBatches();
+        testErrFlushesAtOnce();
+        testInfoWithinTheWindow();
+        testIntervalFlush();
+        testDropsInOrder();
+        testOneDropReadsAsOne();
+        testFlushMeansFlushed();
+        testFlushOnABlockedSink();
+        testFailedWrite();
+        testRotationAndRetention();
+        testStopDrains();
+        testRingOnlyRecords();
+        testRingNumbering();
+    });
 }

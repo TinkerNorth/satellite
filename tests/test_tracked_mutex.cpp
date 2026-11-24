@@ -379,30 +379,22 @@ void test_plainRolesAndRegionsDoNothing() {
 } // namespace
 
 int main() {
+    return satellite::test::runMain("test_tracked_mutex", [] {
 #ifdef SATELLITE_LOCK_STATS
-    test_scopedRoleRestoresThePreviousRole();
-    test_countsEveryAcquisitionAgainstItsRole();
-    test_failedTryLockIsCountedWithoutAnAcquisition();
-    test_contentionChargesTheWaitToTheWaiterAndTheHoldToTheHolder();
-    test_nestingRecordsAnEdgeFromEveryHeldLock();
-    test_outOfOrderUnlockKeepsTheStackStraight();
-    test_blockingRegionRecordsEveryHeldLock();
-    test_conditionVariableAnyReleasesTheLockWhileWaiting();
-    test_resetClearsTheCountsAndKeepsTheNames();
-    test_instancesSharingANameShareTheirStats();
-    test_percentileReadsTheUpperEdgeOfItsBucket();
+        test_scopedRoleRestoresThePreviousRole();
+        test_countsEveryAcquisitionAgainstItsRole();
+        test_failedTryLockIsCountedWithoutAnAcquisition();
+        test_contentionChargesTheWaitToTheWaiterAndTheHoldToTheHolder();
+        test_nestingRecordsAnEdgeFromEveryHeldLock();
+        test_outOfOrderUnlockKeepsTheStackStraight();
+        test_blockingRegionRecordsEveryHeldLock();
+        test_conditionVariableAnyReleasesTheLockWhileWaiting();
+        test_resetClearsTheCountsAndKeepsTheNames();
+        test_instancesSharingANameShareTheirStats();
+        test_percentileReadsTheUpperEdgeOfItsBucket();
 #else
-    test_plainMutexIsLockable();
-    test_plainRolesAndRegionsDoNothing();
+        test_plainMutexIsLockable();
+        test_plainRolesAndRegionsDoNothing();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    });
 }

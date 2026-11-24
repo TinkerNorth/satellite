@@ -629,15 +629,6 @@ void test_hotPath_coldOperationsNeverCrossFrames() {
 } // namespace
 
 int main() {
-    test_hotPath_coldOperationsNeverCrossFrames();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_session_hot_path",
+                                    [] { test_hotPath_coldOperationsNeverCrossFrames(); });
 }

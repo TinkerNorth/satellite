@@ -612,32 +612,31 @@ static void test_preferred_backend_is_a_hint_not_a_mandate() {
 }
 
 int main() {
-    test_identity_union();
-    test_backend_id_for_serial_names_the_owner();
-    test_preferred_backend_wins_when_it_can();
-    test_preferred_backend_is_a_hint_not_a_mandate();
-    test_bus_lifecycle_any_child();
-    test_plug_prefers_first_supporting_child();
-    test_plug_falls_back_when_preferred_refuses();
-    test_plug_fails_when_no_child_accepts();
-    test_plug_rejects_invalid_serials();
-    test_per_serial_routing();
-    test_input_reaches_the_owner_whole();
-    test_idle_refresh_reaches_every_child();
-    test_driver_recheck_reaches_every_child();
-    test_lost_serials_come_from_their_owners();
-    test_settled_serials_come_from_every_child();
-    test_a_disabled_device_is_asked_of_its_owner();
-    test_an_audio_persona_is_asked_of_its_owner();
-    test_unplug_clears_owner();
-    test_unplug_unconfirmed_keeps_owner();
-    test_unplug_unowned_serial_is_gone();
-    test_callbacks_fan_in();
-    test_micAudio_routesToOwner();
-    test_relative_mouse_first_supporting();
-    test_motion_for_type_follows_preference();
-    test_motion_backend_ok_owner_scoped();
-
-    std::cout << "gamepad_mux: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("gamepad_mux", [] {
+        test_identity_union();
+        test_backend_id_for_serial_names_the_owner();
+        test_preferred_backend_wins_when_it_can();
+        test_preferred_backend_is_a_hint_not_a_mandate();
+        test_bus_lifecycle_any_child();
+        test_plug_prefers_first_supporting_child();
+        test_plug_falls_back_when_preferred_refuses();
+        test_plug_fails_when_no_child_accepts();
+        test_plug_rejects_invalid_serials();
+        test_per_serial_routing();
+        test_input_reaches_the_owner_whole();
+        test_idle_refresh_reaches_every_child();
+        test_driver_recheck_reaches_every_child();
+        test_lost_serials_come_from_their_owners();
+        test_settled_serials_come_from_every_child();
+        test_a_disabled_device_is_asked_of_its_owner();
+        test_an_audio_persona_is_asked_of_its_owner();
+        test_unplug_clears_owner();
+        test_unplug_unconfirmed_keeps_owner();
+        test_unplug_unowned_serial_is_gone();
+        test_callbacks_fan_in();
+        test_micAudio_routesToOwner();
+        test_relative_mouse_first_supporting();
+        test_motion_for_type_follows_preference();
+        test_motion_backend_ok_owner_scoped();
+    });
 }

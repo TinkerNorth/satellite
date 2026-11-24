@@ -25,17 +25,9 @@ static void test_beacon_substitutes_fields() {
 }
 
 int main() {
-    std::cout << "Running discovery beacon tests...\n\n";
-    test_beacon_exact_shape();
-    test_beacon_substitutes_fields();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_discovery", [] {
+        std::cout << "Running discovery beacon tests...\n\n";
+        test_beacon_exact_shape();
+        test_beacon_substitutes_fields();
+    });
 }

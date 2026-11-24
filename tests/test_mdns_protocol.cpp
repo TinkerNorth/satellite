@@ -1610,119 +1610,111 @@ static void test_probeProposesTheAnnouncementBytes() {
 }
 
 int main() {
-    std::cout << "Running mDNS protocol tests...\n\n";
+    return satellite::test::runMain("test_mdns_protocol", [] {
+        std::cout << "Running mDNS protocol tests...\n\n";
 
-    test_writeDnsName_basic();
-    test_writeDnsName_singleLabel();
-    test_writeDnsName_emptyTerminatorOnly();
-    test_writeDnsName_rejectsOversizedLabel();
-    test_writeDnsName_acceptsMaxLabel();
-    test_writeDnsName_rejectsUndersizedBuffer();
-    test_writeDnsName_rejectsBufferTooSmallForTerminator();
+        test_writeDnsName_basic();
+        test_writeDnsName_singleLabel();
+        test_writeDnsName_emptyTerminatorOnly();
+        test_writeDnsName_rejectsOversizedLabel();
+        test_writeDnsName_acceptsMaxLabel();
+        test_writeDnsName_rejectsUndersizedBuffer();
+        test_writeDnsName_rejectsBufferTooSmallForTerminator();
 
-    test_readDnsName_roundTrip();
-    test_readDnsName_appendsTrailingDot();
-    test_readDnsName_atNonZeroOffset();
-    test_readDnsName_followsCompressionPointer();
-    test_readDnsName_rejectsForwardJump();
-    test_readDnsName_rejectsTruncatedLabel();
-    test_readDnsName_rejectsPointerPastEnd();
+        test_readDnsName_roundTrip();
+        test_readDnsName_appendsTrailingDot();
+        test_readDnsName_atNonZeroOffset();
+        test_readDnsName_followsCompressionPointer();
+        test_readDnsName_rejectsForwardJump();
+        test_readDnsName_rejectsTruncatedLabel();
+        test_readDnsName_rejectsPointerPastEnd();
 
-    test_parsePacket_singleQuestion();
-    test_parsePacket_nonQuClass();
-    test_parsePacket_multipleQuestions();
-    test_parsePacket_emptyQuestionSection();
-    test_parsePacket_toleratesStaleAnswerCount();
-    test_parsePacket_rejectsTruncatedHeader();
-    test_parsePacket_rejectsTruncatedQuestion();
+        test_parsePacket_singleQuestion();
+        test_parsePacket_nonQuClass();
+        test_parsePacket_multipleQuestions();
+        test_parsePacket_emptyQuestionSection();
+        test_parsePacket_toleratesStaleAnswerCount();
+        test_parsePacket_rejectsTruncatedHeader();
+        test_parsePacket_rejectsTruncatedQuestion();
 
-    test_parsePacket_surfacesKnownAnswer();
-    test_parsePacket_surfacesMultipleKnownAnswers();
-    test_parsePacket_cacheFlushMaskedOffKnownAnswer();
-    test_parsePacket_fourArgStillSkipsAnswers();
-    test_parsePacket_rejectsTruncatedAnswerHeader();
-    test_parsePacket_rejectsAnswerRdlenOverrun();
-    test_parsePacket_rejectsAnswerCountOverrun();
-    test_parsePacket_rejectsAnswerCompressionLoop();
+        test_parsePacket_surfacesKnownAnswer();
+        test_parsePacket_surfacesMultipleKnownAnswers();
+        test_parsePacket_cacheFlushMaskedOffKnownAnswer();
+        test_parsePacket_fourArgStillSkipsAnswers();
+        test_parsePacket_rejectsTruncatedAnswerHeader();
+        test_parsePacket_rejectsAnswerRdlenOverrun();
+        test_parsePacket_rejectsAnswerCountOverrun();
+        test_parsePacket_rejectsAnswerCompressionLoop();
 
-    test_questionMatchesService_ptr();
-    test_questionMatchesService_any();
-    test_questionMatchesService_caseInsensitive();
-    test_questionMatchesService_rejectsWrongType();
-    test_questionMatchesService_rejectsWrongName();
-    test_questionMatchesService_rejectsPrefixAndSuffix();
+        test_questionMatchesService_ptr();
+        test_questionMatchesService_any();
+        test_questionMatchesService_caseInsensitive();
+        test_questionMatchesService_rejectsWrongType();
+        test_questionMatchesService_rejectsWrongName();
+        test_questionMatchesService_rejectsPrefixAndSuffix();
 
-    test_encodeResponse_minimumPacketShape();
-    test_encodeResponse_includesARecordWhenIpv4Provided();
-    test_encodeResponse_ptrTargetsInstanceFqdn();
-    test_encodeResponse_srvCarriesPortAndTarget();
-    test_encodeResponse_cacheFlushBits();
-    test_encodeResponse_writesTxtPairs();
-    test_encodeResponse_emptyTxtIsZeroLengthString();
-    test_encodeResponse_normalTtls();
-    test_encodeResponse_goodbyeUsesTtlZero();
-    test_encodeResponse_rejectsUndersizedBuffer();
-    test_encodeResponse_rejectsBufferBetweenHeaderAndBody();
+        test_encodeResponse_minimumPacketShape();
+        test_encodeResponse_includesARecordWhenIpv4Provided();
+        test_encodeResponse_ptrTargetsInstanceFqdn();
+        test_encodeResponse_srvCarriesPortAndTarget();
+        test_encodeResponse_cacheFlushBits();
+        test_encodeResponse_writesTxtPairs();
+        test_encodeResponse_emptyTxtIsZeroLengthString();
+        test_encodeResponse_normalTtls();
+        test_encodeResponse_goodbyeUsesTtlZero();
+        test_encodeResponse_rejectsUndersizedBuffer();
+        test_encodeResponse_rejectsBufferBetweenHeaderAndBody();
 
-    test_encodeAnnouncement_recordSetAndShape();
-    test_encodeAnnouncement_cacheFlushBits();
-    test_encodeAnnouncement_recordContentMatchesResponse();
-    test_encodeAnnouncement_withoutIpv4OmitsARecord();
-    test_encodeAnnouncement_normalTtlsNeverZero();
+        test_encodeAnnouncement_recordSetAndShape();
+        test_encodeAnnouncement_cacheFlushBits();
+        test_encodeAnnouncement_recordContentMatchesResponse();
+        test_encodeAnnouncement_withoutIpv4OmitsARecord();
+        test_encodeAnnouncement_normalTtlsNeverZero();
 
-    test_encodeProbeQuery_shape();
-    test_encodeProbeQuery_authoritySectionHoldsProposedRecords();
-    test_encodeProbeQuery_authorityNamesAndSrvRdata();
-    test_encodeProbeQuery_rejectsUndersizedBuffer();
+        test_encodeProbeQuery_shape();
+        test_encodeProbeQuery_authoritySectionHoldsProposedRecords();
+        test_encodeProbeQuery_authorityNamesAndSrvRdata();
+        test_encodeProbeQuery_rejectsUndersizedBuffer();
 
-    test_parsePacket_surfacesAuthorityRecords();
-    test_parsePacket_authorityAfterKnownAnswers();
-    test_parsePacket_authorityRejectsRdlenOverrun();
-    test_authorityHasRecordFor_matchesCaseInsensitively();
+        test_parsePacket_surfacesAuthorityRecords();
+        test_parsePacket_authorityAfterKnownAnswers();
+        test_parsePacket_authorityRejectsRdlenOverrun();
+        test_authorityHasRecordFor_matchesCaseInsensitively();
 
-    test_compareRecordSets_identicalSetsAreEqual();
-    test_compareRecordSets_weWinOnGreaterRdataByte();
-    test_compareRecordSets_weLoseOnSmallerRdataByte();
-    test_compareRecordSets_rdataBytesAreUnsigned();
-    test_compareRecordSets_classComparedBeforeType();
-    test_compareRecordSets_typeBreaksTieWhenClassEqual();
-    test_compareRecordSets_shorterRdataPrefixSortsEarlier();
-    test_compareRecordSets_longerSetWinsWhenPrefixMatches();
-    test_compareRecordSets_sortsBeforeComparing();
-    test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs();
+        test_compareRecordSets_identicalSetsAreEqual();
+        test_compareRecordSets_weWinOnGreaterRdataByte();
+        test_compareRecordSets_weLoseOnSmallerRdataByte();
+        test_compareRecordSets_rdataBytesAreUnsigned();
+        test_compareRecordSets_classComparedBeforeType();
+        test_compareRecordSets_typeBreaksTieWhenClassEqual();
+        test_compareRecordSets_shorterRdataPrefixSortsEarlier();
+        test_compareRecordSets_longerSetWinsWhenPrefixMatches();
+        test_compareRecordSets_sortsBeforeComparing();
+        test_compareRecordSets_firstDifferenceDecidesAcrossSortedPairs();
 
-    test_buildProposedRecords_srvTxtOnlyWithoutIpv4();
-    test_buildProposedRecords_includesAWhenIpv4Supplied();
-    test_buildProposedRecords_matchesEncodedProbeAuthority();
+        test_buildProposedRecords_srvTxtOnlyWithoutIpv4();
+        test_buildProposedRecords_includesAWhenIpv4Supplied();
+        test_buildProposedRecords_matchesEncodedProbeAuthority();
 
-    test_conflictRename_firstConflictAppendsTwo();
-    test_conflictRename_subsequentConflictsIncrement();
-    test_conflictRename_nonSuffixParensAreNotMistakenForCounter();
+        test_conflictRename_firstConflictAppendsTwo();
+        test_conflictRename_subsequentConflictsIncrement();
+        test_conflictRename_nonSuffixParensAreNotMistakenForCounter();
 
-    test_isKnownAnswerSuppressed_freshAnswerSuppresses();
-    test_isKnownAnswerSuppressed_lowTtlDoesNotSuppress();
-    test_isKnownAnswerSuppressed_typeAndNameMustMatch();
-    test_isKnownAnswerSuppressed_caseInsensitiveName();
+        test_isKnownAnswerSuppressed_freshAnswerSuppresses();
+        test_isKnownAnswerSuppressed_lowTtlDoesNotSuppress();
+        test_isKnownAnswerSuppressed_typeAndNameMustMatch();
+        test_isKnownAnswerSuppressed_caseInsensitiveName();
 
-    test_encodeResponse_suppressPtrOmitsPtr();
-    test_encodeResponse_suppressSrvAndTxt();
-    test_encodeResponse_suppressAllReturnsZero();
-    test_encodeResponse_suppressAOnlyDropsA();
+        test_encodeResponse_suppressPtrOmitsPtr();
+        test_encodeResponse_suppressSrvAndTxt();
+        test_encodeResponse_suppressAllReturnsZero();
+        test_encodeResponse_suppressAOnlyDropsA();
 
-    test_knownAnswer_endToEnd_suppressesKnownPtr();
-    test_knownAnswer_endToEnd_staleTtlStillSent();
+        test_knownAnswer_endToEnd_suppressesKnownPtr();
+        test_knownAnswer_endToEnd_staleTtlStillSent();
 
-    test_nameEqCi();
-    test_classifyQuestions();
-    test_probeProposesTheAnnouncementBytes();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        test_nameEqCi();
+        test_classifyQuestions();
+        test_probeProposesTheAnnouncementBytes();
+    });
 }

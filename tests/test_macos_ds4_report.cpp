@@ -471,33 +471,25 @@ static void test_touchpad_capabilities() {
 }
 
 int main() {
-    std::cout << "Running macOS DS4 report codec tests...\n\n";
-    test_descriptor_shape();
-    test_pack_neutral_frame();
-    test_pack_buttons();
-    test_pack_triggers_and_digital_bits();
-    test_hat_encoding();
-    test_stick_conversion();
-    test_pack_timestamp_and_counter();
-    test_pack_motion_verbatim();
-    test_battery_byte();
-    test_pack_touchpad_12bit();
-    test_output_parse_prefixed_and_bare();
-    test_output_parse_flags_gate_flag05();
-    test_output_parse_rejects();
-    test_rumble_scaling();
-    test_feature_reports();
-    test_calibration_usb_consumer_parse();
-    test_probe_status_seam();
-    test_touchpad_capabilities();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_macos_ds4_report", [] {
+        std::cout << "Running macOS DS4 report codec tests...\n\n";
+        test_descriptor_shape();
+        test_pack_neutral_frame();
+        test_pack_buttons();
+        test_pack_triggers_and_digital_bits();
+        test_hat_encoding();
+        test_stick_conversion();
+        test_pack_timestamp_and_counter();
+        test_pack_motion_verbatim();
+        test_battery_byte();
+        test_pack_touchpad_12bit();
+        test_output_parse_prefixed_and_bare();
+        test_output_parse_flags_gate_flag05();
+        test_output_parse_rejects();
+        test_rumble_scaling();
+        test_feature_reports();
+        test_calibration_usb_consumer_parse();
+        test_probe_status_seam();
+        test_touchpad_capabilities();
+    });
 }

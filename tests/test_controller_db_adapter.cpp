@@ -39,6 +39,7 @@ bool writeBesideAndRename(const std::string& path, const std::string& bytes) {
 // Portable: the suite runs on the Windows lanes too.
 struct TempDir {
     std::string path;
+    std::filesystem::path dir;
     TempDir() {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
         const std::filesystem::path p =
@@ -46,10 +47,10 @@ struct TempDir {
         std::error_code ec;
         std::filesystem::create_directories(p, ec);
         path = ec ? "" : p.string();
+        dir = p;
     }
     ~TempDir() {
-        std::error_code ec;
-        if (!path.empty()) std::filesystem::remove_all(path, ec);
+        if (!path.empty()) satellite::test::removeTestDir(dir);
     }
 };
 
@@ -176,12 +177,13 @@ static void test_fetch_without_transport() {
 }
 
 int main() {
-    if (sodium_init() < 0) return 1;
-    test_sha256();
-    test_bundled_copy_matches_its_manifest();
-    test_cache_round_trip();
-    test_cache_swap_is_atomic();
-    test_fetch_without_transport();
-    std::cout << "controller_db_adapter: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("controller_db_adapter", []() -> int {
+        if (sodium_init() < 0) return 1;
+        test_sha256();
+        test_bundled_copy_matches_its_manifest();
+        test_cache_round_trip();
+        test_cache_swap_is_atomic();
+        test_fetch_without_transport();
+        return 0;
+    });
 }

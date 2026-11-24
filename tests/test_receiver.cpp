@@ -684,49 +684,41 @@ static void test_parseInnerHeader() {
 }
 
 int main() {
-    std::cout << "Running receiver wire-decode tests...\n\n";
+    return satellite::test::runMain("test_receiver", [] {
+        std::cout << "Running receiver wire-decode tests...\n\n";
 
-    test_decodeMotionReport_littleEndian();
-    test_decodeMotionReport_noOverRead();
-    test_decodeTouchpadReport_wireLayout();
-    test_decodeTouchpadReport_noOverRead();
-    test_decodeAudioFrameHeader_bigEndianSeq();
-    test_encodeAudioFrameHeader_byteExactAndRoundTrip();
-    test_isDigitalSilence();
-    test_micAudioWireConstants();
-    test_parseInnerHeader();
+        test_decodeMotionReport_littleEndian();
+        test_decodeMotionReport_noOverRead();
+        test_decodeTouchpadReport_wireLayout();
+        test_decodeTouchpadReport_noOverRead();
+        test_decodeAudioFrameHeader_bigEndianSeq();
+        test_encodeAudioFrameHeader_byteExactAndRoundTrip();
+        test_isDigitalSilence();
+        test_micAudioWireConstants();
+        test_parseInnerHeader();
 
-    test_dispatch_handledFlagSplitsMalformedFromUnknown();
-    test_dispatch_micAudio_truncatedRejected();
-    test_dispatch_micAudio_reachesServiceAndRateLimits();
-    test_dispatch_micAudio_unknownSlotAndToken();
+        test_dispatch_handledFlagSplitsMalformedFromUnknown();
+        test_dispatch_micAudio_truncatedRejected();
+        test_dispatch_micAudio_reachesServiceAndRateLimits();
+        test_dispatch_micAudio_unknownSlotAndToken();
 
-    test_dispatch_motion_truncatedRejected();
-    test_dispatch_motion_exactLengthAccepted();
-    test_dispatch_motion_oversizedAccepted();
+        test_dispatch_motion_truncatedRejected();
+        test_dispatch_motion_exactLengthAccepted();
+        test_dispatch_motion_oversizedAccepted();
 
-    test_dispatch_battery_truncatedRejected();
-    test_dispatch_battery_exactLengthAccepted();
+        test_dispatch_battery_truncatedRejected();
+        test_dispatch_battery_exactLengthAccepted();
 
-    test_dispatch_touchpad_truncatedRejected();
-    test_dispatch_touchpad_exactLengthAccepted();
+        test_dispatch_touchpad_truncatedRejected();
+        test_dispatch_touchpad_exactLengthAccepted();
 
-    test_dispatch_gamepad_truncatedRejected();
-    test_dispatch_gamepad_exactLengthAccepted();
+        test_dispatch_gamepad_truncatedRejected();
+        test_dispatch_gamepad_exactLengthAccepted();
 
-    test_dispatch_unknownTypeIgnored();
-    test_dispatch_heartbeatZeroLength();
+        test_dispatch_unknownTypeIgnored();
+        test_dispatch_heartbeatZeroLength();
 
-    test_dispatch_deletedRegistrationOpcodesAreDropped();
-    test_dispatch_gamepad_backendRejectReportsNotOk();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        test_dispatch_deletedRegistrationOpcodesAreDropped();
+        test_dispatch_gamepad_backendRejectReportsNotOk();
+    });
 }

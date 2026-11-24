@@ -170,25 +170,17 @@ static void test_decodeTouchpad_clear_flags() {
 }
 
 int main() {
-    std::cout << "Running codec tests...\n\n";
-    test_wireToRange_saturates_at_edges();
-    test_wireToRange_centre();
-    test_wireToRange_degenerate_res();
-    test_ds4Pack_roundtrips_coordinates();
-    test_ds4Pack_tracking_and_lift_bit();
-    test_decodeMotion_le_fields();
-    test_decodeTouchpad_flags_fingers_time();
-    test_decodeTouchpad_buttonBitsIndependent();
-    test_decodeTouchpad_v1Layout();
-    test_decodeTouchpad_clear_flags();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_codecs", [] {
+        std::cout << "Running codec tests...\n\n";
+        test_wireToRange_saturates_at_edges();
+        test_wireToRange_centre();
+        test_wireToRange_degenerate_res();
+        test_ds4Pack_roundtrips_coordinates();
+        test_ds4Pack_tracking_and_lift_bit();
+        test_decodeMotion_le_fields();
+        test_decodeTouchpad_flags_fingers_time();
+        test_decodeTouchpad_buttonBitsIndependent();
+        test_decodeTouchpad_v1Layout();
+        test_decodeTouchpad_clear_flags();
+    });
 }

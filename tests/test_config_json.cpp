@@ -399,19 +399,18 @@ static void test_last_check_epoch_64bit() {
 }
 
 int main() {
-    test_full_round_trip();
-    test_special_chars_in_name();
-    test_tolerant_parsing();
-    test_present_overrides_absent_keeps_default();
-    test_paired_device_missing_id_skipped();
-    test_shared_key_on_disk_name();
-    test_legacy_pair_port_key_ignored();
-    test_controller_audio_default_and_persistence();
-    test_install_defaults_apply_once_per_stamp();
-    test_controller_audio_split_directions();
-    test_last_check_epoch_64bit();
-    test_controller_db_updates_default_and_persistence();
-
-    std::cout << "config_json: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("config_json", [] {
+        test_full_round_trip();
+        test_special_chars_in_name();
+        test_tolerant_parsing();
+        test_present_overrides_absent_keeps_default();
+        test_paired_device_missing_id_skipped();
+        test_shared_key_on_disk_name();
+        test_legacy_pair_port_key_ignored();
+        test_controller_audio_default_and_persistence();
+        test_install_defaults_apply_once_per_stamp();
+        test_controller_audio_split_directions();
+        test_last_check_epoch_64bit();
+        test_controller_db_updates_default_and_persistence();
+    });
 }

@@ -360,25 +360,17 @@ static void test_every_part_disabled_in_windows_has_a_note() {
 }
 
 int main() {
-    std::cout << "Running update UI contract tests...\n\n";
-    test_scan_sees_the_reads();
-    test_snapshot_fields_are_written();
-    test_release_fields_are_written();
-    test_string_keys_are_in_every_catalog();
-    test_translations_keep_the_placeholders();
-    test_touchpad_surface_types_are_wire_names();
-    test_a_disabled_controller_reads_disabled();
-    test_every_part_disabled_in_windows_has_a_note();
-    test_every_controller_state_written_has_a_label();
-    test_controller_state_labels_are_in_every_catalog();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_update_ui_contract", [] {
+        std::cout << "Running update UI contract tests...\n\n";
+        test_scan_sees_the_reads();
+        test_snapshot_fields_are_written();
+        test_release_fields_are_written();
+        test_string_keys_are_in_every_catalog();
+        test_translations_keep_the_placeholders();
+        test_touchpad_surface_types_are_wire_names();
+        test_a_disabled_controller_reads_disabled();
+        test_every_part_disabled_in_windows_has_a_note();
+        test_every_controller_state_written_has_a_label();
+        test_controller_state_labels_are_in_every_catalog();
+    });
 }

@@ -85,19 +85,11 @@ static void test_a_touch_finger_packs_two_12_bit_coordinates() {
 }
 
 int main() {
-    test_loads_take_each_boundary_byte_in_each_position();
-    test_a_signed_load_takes_its_sign_from_the_high_byte();
-    test_stores_split_a_word_top_bit_included();
-    test_a_ds4_stick_byte_spans_the_int16_range();
-    test_a_touch_finger_packs_two_12_bit_coordinates();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_byte_boundaries", [] {
+        test_loads_take_each_boundary_byte_in_each_position();
+        test_a_signed_load_takes_its_sign_from_the_high_byte();
+        test_stores_split_a_word_top_bit_included();
+        test_a_ds4_stick_byte_spans_the_int16_range();
+        test_a_touch_finger_packs_two_12_bit_coordinates();
+    });
 }

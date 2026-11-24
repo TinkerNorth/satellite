@@ -396,26 +396,18 @@ void testTheEffectsLockNestsOnlyAboveTheSnapshotLock() {
 } // namespace
 
 int main() {
-    testFirstSightAppliesBothEffects();
-    testUnchangedSnapshotAppliesNothing();
-    testOnlyTheDifferingEffectIsApplied();
-    testSettingsWithoutEffectsApplyNothing();
-    testFlippingBackIsAppliedAgain();
-    testNoOpUpdateAppliesNothing();
-    testLatestSnapshotWinsOverASlowerEarlierWriter();
-    testRacingFlipsEndWithTheFinalSnapshotApplied();
+    return satellite::test::runMain("test_config_effects", [] {
+        testFirstSightAppliesBothEffects();
+        testUnchangedSnapshotAppliesNothing();
+        testOnlyTheDifferingEffectIsApplied();
+        testSettingsWithoutEffectsApplyNothing();
+        testFlippingBackIsAppliedAgain();
+        testNoOpUpdateAppliesNothing();
+        testLatestSnapshotWinsOverASlowerEarlierWriter();
+        testRacingFlipsEndWithTheFinalSnapshotApplied();
 #ifdef SATELLITE_LOCK_STATS
-    testSinksRunHoldingOnlyTheEffectsLock();
-    testTheEffectsLockNestsOnlyAboveTheSnapshotLock();
+        testSinksRunHoldingOnlyTheEffectsLock();
+        testTheEffectsLockNestsOnlyAboveTheSnapshotLock();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    });
 }

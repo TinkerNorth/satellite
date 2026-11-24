@@ -214,11 +214,12 @@ static void test_mirror() {
 }
 
 int main() {
-    if (sodium_init() < 0) return 1;
-    test_the_whole_set();
-    test_record_by_record();
-    test_catalog_lists();
-    test_mirror();
-    std::cout << "controller_db_future: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("controller_db_future", []() -> int {
+        if (sodium_init() < 0) return 1;
+        test_the_whole_set();
+        test_record_by_record();
+        test_catalog_lists();
+        test_mirror();
+        return 0;
+    });
 }

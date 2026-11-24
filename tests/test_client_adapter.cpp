@@ -226,21 +226,14 @@ void test_sendersOnSeveralThreadsReachTheClientInCounterOrder() {
 } // namespace
 
 int main() {
-    if (sodium_init() < 0 || !netInit()) {
-        std::cerr << "init failed\n";
-        return 1;
-    }
-    test_aDeferredAckLeavesRightAfterTheSendHoldingTheGate();
-    test_sendersOnSeveralThreadsReachTheClientInCounterOrder();
-    netShutdown();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_client_adapter", []() -> int {
+        if (sodium_init() < 0 || !netInit()) {
+            std::cerr << "init failed\n";
+            return 1;
+        }
+        test_aDeferredAckLeavesRightAfterTheSendHoldingTheGate();
+        test_sendersOnSeveralThreadsReachTheClientInCounterOrder();
+        netShutdown();
+        return 0;
+    });
 }

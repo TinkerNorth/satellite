@@ -209,27 +209,19 @@ static void test_unknown_slot_is_ignored() {
 }
 
 int main() {
-    std::cout << "Running pause detector tests...\n\n";
-    test_steady_updates_never_pause();
-    test_gap_at_threshold_is_reported();
-    test_gap_under_threshold_is_only_the_longest();
-    test_unchanged_packet_number_extends_the_pause();
-    test_first_reading_only_sets_the_baseline();
-    test_connection_changes_are_reported_once();
-    test_reconnect_is_not_a_pause();
-    test_disconnected_slot_ignores_the_packet_number();
-    test_slots_are_independent();
-    test_several_pauses_keep_the_longest();
-    test_packet_number_wraparound_is_an_update();
-    test_unknown_slot_is_ignored();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_pause_detector", [] {
+        std::cout << "Running pause detector tests...\n\n";
+        test_steady_updates_never_pause();
+        test_gap_at_threshold_is_reported();
+        test_gap_under_threshold_is_only_the_longest();
+        test_unchanged_packet_number_extends_the_pause();
+        test_first_reading_only_sets_the_baseline();
+        test_connection_changes_are_reported_once();
+        test_reconnect_is_not_a_pause();
+        test_disconnected_slot_ignores_the_packet_number();
+        test_slots_are_independent();
+        test_several_pauses_keep_the_longest();
+        test_packet_number_wraparound_is_an_update();
+        test_unknown_slot_is_ignored();
+    });
 }

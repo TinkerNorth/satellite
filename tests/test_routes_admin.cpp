@@ -49,10 +49,12 @@ using satellite::jsonStr;
 
 struct TempHome {
     std::string path;
+    std::filesystem::path dir;
     TempHome() {
         char tmpl[] = "/tmp/satellite-routes-XXXXXX";
         char* d = mkdtemp(tmpl);
         path = (d != nullptr) ? d : "/tmp";
+        dir = path;
         setenv("HOME", path.c_str(), 1);
         setenv("XDG_CONFIG_HOME", path.c_str(), 1);
     }
@@ -61,10 +63,7 @@ struct TempHome {
     // destructor only covers the early-exit paths.
     void cleanup() {
         if (path.rfind("/tmp/satellite-routes-", 0) != 0) return;
-        std::error_code ec;
-        std::filesystem::remove_all(path, ec);
-        EXPECT(!ec);
-        if (ec) std::cerr << "  remove_all(" << path << "): " << ec.message() << "\n";
+        satellite::test::removeTestDir(dir);
         path.clear();
     }
     ~TempHome() { cleanup(); }
@@ -181,1010 +180,1025 @@ static std::string waitForUpdateState(httplib::Client& cli, const std::string& w
 }
 
 int main() {
-    std::cout << "Running admin API route tests...\n\n";
+    return satellite::test::runMain("test_routes_admin", []() -> int {
+        std::cout << "Running admin API route tests...\n\n";
 
-    if (!sodiumInit()) {
-        std::cerr << "sodium init failed\n";
-        return 1;
-    }
-
-    TempHome home;
-    g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
-    g_appRunning = true;
-    logWriter().start(std::make_unique<DiscardingLogSink>());
-
-    // Minimal web root so the mount point + SPA fallback have something real.
-    g_webDir = home.path + "/web";
-    mkdir(g_webDir.c_str(), 0755);
-    {
-        std::ofstream f(g_webDir + "/index.html");
-        f << "<!doctype html><title>satellite-test-spa</title>";
-    }
-
-    StubGamepad gamepad;
-    StubClient clientPort;
-    StubLog log;
-    SessionService svc(gamepad, clientPort, log);
-
-    httplib::Server server;
-    registerAdminRoutes(server, svc);
-    int port = server.bind_to_any_port("127.0.0.1");
-    if (port <= 0) {
-        std::cerr << "failed to bind loopback port\n";
-        return 1;
-    }
-    std::thread serverThread([&server] { server.listen_after_bind(); });
-    server.wait_until_ready();
-
-    httplib::Client cli("127.0.0.1", port);
-    cli.set_connection_timeout(5);
-    cli.set_read_timeout(5);
-
-    // ---- pre-routing guard (DNS rebind / CSRF) -------------------------------
-    {
-        TEST("non-loopback Host header: 403 before any route runs");
-        auto res = cli.Get("/api/status", httplib::Headers{{"Host", "evil.example"}});
-        EXPECT(res && res->status == 403);
-        if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "error"), std::string("forbidden host"));
-    }
-    {
-        TEST("loopback Host with port passes");
-        auto res = cli.Get("/api/status");
-        EXPECT(res && res->status == 200);
-    }
-    {
-        TEST("cross-site Origin on a mutating method: 403");
-        auto res = cli.Post("/api/updates/cancel", {{"Origin", "http://evil.example"}}, "",
-                            "application/json");
-        EXPECT(res && res->status == 403);
-        if (res) {
-            EXPECT_EQ(jsonStr(parseJson(res->body), "error"),
-                      std::string("cross-site request blocked"));
+        if (!sodiumInit()) {
+            std::cerr << "sodium init failed\n";
+            return 1;
         }
-    }
-    {
-        TEST("loopback Origin on a mutating method passes");
-        auto res = cli.Post("/api/updates/cancel",
-                            {{"Origin", std::string("http://127.0.0.1:") + std::to_string(port)}},
-                            "", "application/json");
-        EXPECT(res && res->status == 200);
-    }
-    {
-        TEST("cross-site Origin on GET is allowed (reads are loopback-bound anyway)");
-        auto res = cli.Get("/api/status", httplib::Headers{{"Origin", "http://evil.example"}});
-        EXPECT(res && res->status == 200);
-    }
 
-    // ---- web UI serving --------------------------------------------------------
-    {
-        TEST("GET /: mounted index.html wins (the /dashboard redirect is the "
-             "fallback for a missing web root)");
-        // httplib serves file mounts before route handlers, so with a real web
-        // root GET / is the SPA itself, exactly as in production installs.
-        auto res = cli.Get("/");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT(res->body.find("satellite-test-spa") != std::string::npos);
-    }
-    {
-        TEST("SPA fallbacks serve index.html");
-        for (const char* p : {"/dashboard", "/settings", "/debug", "/logs", "/donate"}) {
-            auto res = cli.Get(p);
+        TempHome home;
+        g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
+        g_appRunning = true;
+        logWriter().start(std::make_unique<DiscardingLogSink>());
+
+        // Minimal web root so the mount point + SPA fallback have something real.
+        g_webDir = home.path + "/web";
+        mkdir(g_webDir.c_str(), 0755);
+        {
+            std::ofstream f(g_webDir + "/index.html");
+            f << "<!doctype html><title>satellite-test-spa</title>";
+        }
+
+        StubGamepad gamepad;
+        StubClient clientPort;
+        StubLog log;
+        SessionService svc(gamepad, clientPort, log);
+
+        httplib::Server server;
+        registerAdminRoutes(server, svc);
+        int port = server.bind_to_any_port("127.0.0.1");
+        if (port <= 0) {
+            std::cerr << "failed to bind loopback port\n";
+            return 1;
+        }
+        std::thread serverThread([&server] { server.listen_after_bind(); });
+        server.wait_until_ready();
+
+        httplib::Client cli("127.0.0.1", port);
+        cli.set_connection_timeout(5);
+        cli.set_read_timeout(5);
+
+        // ---- pre-routing guard (DNS rebind / CSRF) -------------------------------
+        {
+            TEST("non-loopback Host header: 403 before any route runs");
+            auto res = cli.Get("/api/status", httplib::Headers{{"Host", "evil.example"}});
+            EXPECT(res && res->status == 403);
+            if (res)
+                EXPECT_EQ(jsonStr(parseJson(res->body), "error"), std::string("forbidden host"));
+        }
+        {
+            TEST("loopback Host with port passes");
+            auto res = cli.Get("/api/status");
+            EXPECT(res && res->status == 200);
+        }
+        {
+            TEST("cross-site Origin on a mutating method: 403");
+            auto res = cli.Post("/api/updates/cancel", {{"Origin", "http://evil.example"}}, "",
+                                "application/json");
+            EXPECT(res && res->status == 403);
+            if (res) {
+                EXPECT_EQ(jsonStr(parseJson(res->body), "error"),
+                          std::string("cross-site request blocked"));
+            }
+        }
+        {
+            TEST("loopback Origin on a mutating method passes");
+            auto res =
+                cli.Post("/api/updates/cancel",
+                         {{"Origin", std::string("http://127.0.0.1:") + std::to_string(port)}}, "",
+                         "application/json");
+            EXPECT(res && res->status == 200);
+        }
+        {
+            TEST("cross-site Origin on GET is allowed (reads are loopback-bound anyway)");
+            auto res = cli.Get("/api/status", httplib::Headers{{"Origin", "http://evil.example"}});
+            EXPECT(res && res->status == 200);
+        }
+
+        // ---- web UI serving --------------------------------------------------------
+        {
+            TEST("GET /: mounted index.html wins (the /dashboard redirect is the "
+                 "fallback for a missing web root)");
+            // httplib serves file mounts before route handlers, so with a real web
+            // root GET / is the SPA itself, exactly as in production installs.
+            auto res = cli.Get("/");
             EXPECT(res && res->status == 200);
             if (res) EXPECT(res->body.find("satellite-test-spa") != std::string::npos);
         }
-    }
-    {
-        TEST("a static file is served with Cache-Control: no-cache, so an update's scripts "
-             "reload");
         {
-            std::ofstream f(g_webDir + "/app.js");
-            f << "var satelliteTestScript = 1;";
-        }
-        auto res = cli.Get("/app.js");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT_EQ(res->get_header_value("Cache-Control"), std::string("no-cache"));
-
-        TEST("the SPA fallback is served with Cache-Control: no-cache too");
-        auto spa = cli.Get("/settings");
-        EXPECT(spa && spa->status == 200);
-        if (spa) EXPECT_EQ(spa->get_header_value("Cache-Control"), std::string("no-cache"));
-    }
-
-    // ---- status / version / debug / backend -----------------------------------
-    {
-        TEST("GET /api/status: config-backed fields present");
-        auto res = cli.Get("/api/status");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.contains("listening") && j["listening"].is_boolean());
-            const long udpPort = g_configStore->current()->udpPort;
-            EXPECT_EQ(jsonInt(j, "udpPort"), udpPort);
-            EXPECT_EQ(jsonStr(j, "senderIP"), std::string("none"));
-            EXPECT(j.contains("backend") && j["backend"].is_object());
-        }
-    }
-    {
-        TEST("GET /api/version: version string + platformId fallback");
-        auto res = cli.Get("/api/version");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonStr(j, "version"), std::string(SATELLITE_VERSION));
-            EXPECT_EQ(jsonStr(j, "platformId"), std::string("unknown")); // no g_updateService
-        }
-    }
-    {
-        TEST("GET /api/debug: telemetry counters present");
-        auto res = cli.Get("/api/debug");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.contains("submitOk"));
-            EXPECT(j.contains("submitFail"));
-            EXPECT(j.contains("decryptFail"));
-            EXPECT(j.contains("replayDrop"));
-        }
-    }
-    {
-        TEST("GET /api/backend/status: stable identifier surface");
-        auto res = cli.Get("/api/backend/status");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(!jsonStr(j, "id").empty());
-            EXPECT(j.contains("supported") && j["supported"].is_boolean());
-            EXPECT(j.contains("available") && j["available"].is_boolean());
-            EXPECT(j.contains("errorCode"));
-            // Per-host option list rides alongside the legacy singular object.
-            EXPECT(j.contains("backends") && j["backends"].is_array());
-            if (j.contains("backends") && j["backends"].is_array() && !j["backends"].empty()) {
-                const Json& b = j["backends"][0];
-                EXPECT(!jsonStr(b, "id").empty());
-                EXPECT(b.contains("vendor"));
-                EXPECT(b.contains("kernelMode"));
-                // Runtime controller-audio switch, alongside the static
-                // kernelMode identity (see backend_registry.h).
-                EXPECT(b.contains("audio") && b["audio"].is_boolean());
-                EXPECT(b.contains("available"));
-                EXPECT(b.contains("controllers") && b["controllers"].is_array());
-                EXPECT(b.contains("driverVersion"));
-                EXPECT(b.contains("bundledVersion"));
-                EXPECT(b.contains("versionState") && b["versionState"].is_string());
-                EXPECT(b.contains("restartPending") && b["restartPending"].is_boolean());
+            TEST("SPA fallbacks serve index.html");
+            for (const char* p : {"/dashboard", "/settings", "/debug", "/logs", "/donate"}) {
+                auto res = cli.Get(p);
+                EXPECT(res && res->status == 200);
+                if (res) EXPECT(res->body.find("satellite-test-spa") != std::string::npos);
             }
         }
-    }
-    {
-        TEST("POST /api/backend/install-driver: rejects a body with no id");
-        auto res = cli.Post("/api/backend/install-driver", "{}", "application/json");
-        EXPECT(res && res->status == 400);
-        if (res) EXPECT(!jsonStr(parseJson(res->body), "error").empty());
-
-        TEST("POST /api/backend/install-driver: rejects a backend this host cannot install");
-        auto unknown = cli.Post("/api/backend/install-driver", R"({"id":"nosuchbackend"})",
-                                "application/json");
-        EXPECT(unknown && unknown->status == 400);
-        if (unknown) EXPECT(!jsonStr(parseJson(unknown->body), "error").empty());
-    }
-    {
-        TEST("GET /api/server/capabilities is served on the admin surface too");
-        auto res = cli.Get("/api/server/capabilities");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"),
-                      static_cast<long>(PROTOCOL_VERSION));
-        }
-    }
-    {
-        TEST("GET /api/netinfo: port + firewall shape");
-        auto res = cli.Get("/api/netinfo");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.contains("ports") && j["ports"].is_object());
-            if (j.contains("ports")) {
-                EXPECT_EQ(jsonInt(j["ports"], "mdns"), 5353L);
-                EXPECT_EQ(jsonInt(j["ports"], "client"), static_cast<long>(DEFAULT_CLIENT_PORT));
+        {
+            TEST("a static file is served with Cache-Control: no-cache, so an update's scripts "
+                 "reload");
+            {
+                std::ofstream f(g_webDir + "/app.js");
+                f << "var satelliteTestScript = 1;";
             }
-            EXPECT(j.contains("firewall") && j["firewall"].is_object());
-            EXPECT(j.contains("interfaces") && j["interfaces"].is_array());
-        }
-    }
+            auto res = cli.Get("/app.js");
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT_EQ(res->get_header_value("Cache-Control"), std::string("no-cache"));
 
-    // ---- config mutation --------------------------------------------------------
-    {
-        TEST("POST /api/config: in-range udpPort applied and echoed");
-        auto res = cli.Post("/api/config", R"({"udpPort":4242,"discoveryBroadcastEnabled":false})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonInt(j, "udpPort"), 4242L);
-            EXPECT_EQ(jsonBool(j, "udpPortRejected"), false);
+            TEST("the SPA fallback is served with Cache-Control: no-cache too");
+            auto spa = cli.Get("/settings");
+            EXPECT(spa && spa->status == 200);
+            if (spa) EXPECT_EQ(spa->get_header_value("Cache-Control"), std::string("no-cache"));
         }
-        const std::shared_ptr<const Config> cfg = g_configStore->current();
-        EXPECT_EQ(cfg->udpPort, 4242);
-        EXPECT_EQ(cfg->discoveryBroadcastEnabled, false);
-    }
-    {
-        TEST("POST /api/config: out-of-range udpPort rejected, not clamped");
-        auto res = cli.Post("/api/config", R"({"udpPort":80})", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "udpPortRejected"), true);
-            EXPECT_EQ(jsonInt(j, "udpPort"), 4242L); // echoes the effective port
-        }
-    }
-    {
-        TEST("POST /api/config: absent keys leave stored values untouched");
-        auto res = cli.Post("/api/config", R"({"networkInterface":"lo0"})", "application/json");
-        EXPECT(res && res->status == 200);
-        const std::shared_ptr<const Config> cfg = g_configStore->current();
-        EXPECT_EQ(cfg->udpPort, 4242);
-        EXPECT_EQ(cfg->discoveryBroadcastEnabled, false);
-        EXPECT_EQ(cfg->networkInterface, std::string("lo0"));
-    }
-    {
-        TEST("POST /api/config: controllerAudio applies and shows up in /api/status");
-        auto off = cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
-        EXPECT(off && off->status == 200);
+
+        // ---- status / version / debug / backend -----------------------------------
         {
-            const std::shared_ptr<const Config> cfg = g_configStore->current();
-            EXPECT_EQ(cfg->controllerAudio, false);
+            TEST("GET /api/status: config-backed fields present");
+            auto res = cli.Get("/api/status");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.contains("listening") && j["listening"].is_boolean());
+                const long udpPort = g_configStore->current()->udpPort;
+                EXPECT_EQ(jsonInt(j, "udpPort"), udpPort);
+                EXPECT_EQ(jsonStr(j, "senderIP"), std::string("none"));
+                EXPECT(j.contains("backend") && j["backend"].is_object());
+            }
         }
-        auto status = cli.Get("/api/status");
-        EXPECT(status && status->status == 200);
-        if (status) EXPECT_EQ(jsonBool(parseJson(status->body), "controllerAudio"), false);
-
-        TEST("POST /api/config: the capabilities backends array follows the setting");
-        auto caps = cli.Get("/api/server/capabilities");
-        EXPECT(caps && caps->status == 200);
-        if (caps) { EXPECT(caps->body.find("\"audio\":true") == std::string::npos); }
-
-        TEST("POST /api/config: controllerAudio goes back on, and absent leaves it alone");
-        auto on = cli.Post("/api/config", R"({"controllerAudio":true})", "application/json");
-        EXPECT(on && on->status == 200);
-        auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
-        EXPECT(other && other->status == 200);
-        const std::shared_ptr<const Config> cfg = g_configStore->current();
-        EXPECT_EQ(cfg->controllerAudio, true);
-    }
-    {
-        TEST("POST /api/config: each audio direction applies on its own");
-        auto res = cli.Post("/api/config",
-                            R"({"controllerAudioMic":false,"controllerAudioSpeaker":true,
-                         "controllerAudioHaptics":false})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
         {
+            TEST("GET /api/version: version string + platformId fallback");
+            auto res = cli.Get("/api/version");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonStr(j, "version"), std::string(SATELLITE_VERSION));
+                EXPECT_EQ(jsonStr(j, "platformId"), std::string("unknown")); // no g_updateService
+            }
+        }
+        {
+            TEST("GET /api/debug: telemetry counters present");
+            auto res = cli.Get("/api/debug");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.contains("submitOk"));
+                EXPECT(j.contains("submitFail"));
+                EXPECT(j.contains("decryptFail"));
+                EXPECT(j.contains("replayDrop"));
+            }
+        }
+        {
+            TEST("GET /api/backend/status: stable identifier surface");
+            auto res = cli.Get("/api/backend/status");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(!jsonStr(j, "id").empty());
+                EXPECT(j.contains("supported") && j["supported"].is_boolean());
+                EXPECT(j.contains("available") && j["available"].is_boolean());
+                EXPECT(j.contains("errorCode"));
+                // Per-host option list rides alongside the legacy singular object.
+                EXPECT(j.contains("backends") && j["backends"].is_array());
+                if (j.contains("backends") && j["backends"].is_array() && !j["backends"].empty()) {
+                    const Json& b = j["backends"][0];
+                    EXPECT(!jsonStr(b, "id").empty());
+                    EXPECT(b.contains("vendor"));
+                    EXPECT(b.contains("kernelMode"));
+                    // Runtime controller-audio switch, alongside the static
+                    // kernelMode identity (see backend_registry.h).
+                    EXPECT(b.contains("audio") && b["audio"].is_boolean());
+                    EXPECT(b.contains("available"));
+                    EXPECT(b.contains("controllers") && b["controllers"].is_array());
+                    EXPECT(b.contains("driverVersion"));
+                    EXPECT(b.contains("bundledVersion"));
+                    EXPECT(b.contains("versionState") && b["versionState"].is_string());
+                    EXPECT(b.contains("restartPending") && b["restartPending"].is_boolean());
+                }
+            }
+        }
+        {
+            TEST("POST /api/backend/install-driver: rejects a body with no id");
+            auto res = cli.Post("/api/backend/install-driver", "{}", "application/json");
+            EXPECT(res && res->status == 400);
+            if (res) EXPECT(!jsonStr(parseJson(res->body), "error").empty());
+
+            TEST("POST /api/backend/install-driver: rejects a backend this host cannot install");
+            auto unknown = cli.Post("/api/backend/install-driver", R"({"id":"nosuchbackend"})",
+                                    "application/json");
+            EXPECT(unknown && unknown->status == 400);
+            if (unknown) EXPECT(!jsonStr(parseJson(unknown->body), "error").empty());
+        }
+        {
+            TEST("GET /api/server/capabilities is served on the admin surface too");
+            auto res = cli.Get("/api/server/capabilities");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"),
+                          static_cast<long>(PROTOCOL_VERSION));
+            }
+        }
+        {
+            TEST("GET /api/netinfo: port + firewall shape");
+            auto res = cli.Get("/api/netinfo");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.contains("ports") && j["ports"].is_object());
+                if (j.contains("ports")) {
+                    EXPECT_EQ(jsonInt(j["ports"], "mdns"), 5353L);
+                    EXPECT_EQ(jsonInt(j["ports"], "client"),
+                              static_cast<long>(DEFAULT_CLIENT_PORT));
+                }
+                EXPECT(j.contains("firewall") && j["firewall"].is_object());
+                EXPECT(j.contains("interfaces") && j["interfaces"].is_array());
+            }
+        }
+
+        // ---- config mutation --------------------------------------------------------
+        {
+            TEST("POST /api/config: in-range udpPort applied and echoed");
+            auto res =
+                cli.Post("/api/config", R"({"udpPort":4242,"discoveryBroadcastEnabled":false})",
+                         "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonInt(j, "udpPort"), 4242L);
+                EXPECT_EQ(jsonBool(j, "udpPortRejected"), false);
+            }
             const std::shared_ptr<const Config> cfg = g_configStore->current();
-            EXPECT_EQ(cfg->controllerAudioMic, false);
-            EXPECT_EQ(cfg->controllerAudioSpeaker, true);
-            EXPECT_EQ(cfg->controllerAudioHaptics, false);
+            EXPECT_EQ(cfg->udpPort, 4242);
+            EXPECT_EQ(cfg->discoveryBroadcastEnabled, false);
+        }
+        {
+            TEST("POST /api/config: out-of-range udpPort rejected, not clamped");
+            auto res = cli.Post("/api/config", R"({"udpPort":80})", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "udpPortRejected"), true);
+                EXPECT_EQ(jsonInt(j, "udpPort"), 4242L); // echoes the effective port
+            }
+        }
+        {
+            TEST("POST /api/config: absent keys leave stored values untouched");
+            auto res = cli.Post("/api/config", R"({"networkInterface":"lo0"})", "application/json");
+            EXPECT(res && res->status == 200);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
+            EXPECT_EQ(cfg->udpPort, 4242);
+            EXPECT_EQ(cfg->discoveryBroadcastEnabled, false);
+            EXPECT_EQ(cfg->networkInterface, std::string("lo0"));
+        }
+        {
+            TEST("POST /api/config: controllerAudio applies and shows up in /api/status");
+            auto off = cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
+            EXPECT(off && off->status == 200);
+            {
+                const std::shared_ptr<const Config> cfg = g_configStore->current();
+                EXPECT_EQ(cfg->controllerAudio, false);
+            }
+            auto status = cli.Get("/api/status");
+            EXPECT(status && status->status == 200);
+            if (status) EXPECT_EQ(jsonBool(parseJson(status->body), "controllerAudio"), false);
+
+            TEST("POST /api/config: the capabilities backends array follows the setting");
+            auto caps = cli.Get("/api/server/capabilities");
+            EXPECT(caps && caps->status == 200);
+            if (caps) { EXPECT(caps->body.find("\"audio\":true") == std::string::npos); }
+
+            TEST("POST /api/config: controllerAudio goes back on, and absent leaves it alone");
+            auto on = cli.Post("/api/config", R"({"controllerAudio":true})", "application/json");
+            EXPECT(on && on->status == 200);
+            auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
+            EXPECT(other && other->status == 200);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
             EXPECT_EQ(cfg->controllerAudio, true);
         }
+        {
+            TEST("POST /api/config: each audio direction applies on its own");
+            auto res = cli.Post("/api/config",
+                                R"({"controllerAudioMic":false,"controllerAudioSpeaker":true,
+                             "controllerAudioHaptics":false})",
+                                "application/json");
+            EXPECT(res && res->status == 200);
+            {
+                const std::shared_ptr<const Config> cfg = g_configStore->current();
+                EXPECT_EQ(cfg->controllerAudioMic, false);
+                EXPECT_EQ(cfg->controllerAudioSpeaker, true);
+                EXPECT_EQ(cfg->controllerAudioHaptics, false);
+                EXPECT_EQ(cfg->controllerAudio, true);
+            }
 
-        TEST("GET /api/status carries both directions, so the form can seed itself");
-        auto status = cli.Get("/api/status");
-        EXPECT(status && status->status == 200);
-        if (status) {
-            const Json s = parseJson(status->body);
-            EXPECT_EQ(jsonBool(s, "controllerAudioMic"), false);
-            EXPECT_EQ(jsonBool(s, "controllerAudioSpeaker"), true);
-            EXPECT_EQ(jsonBool(s, "controllerAudioHaptics"), false);
+            TEST("GET /api/status carries both directions, so the form can seed itself");
+            auto status = cli.Get("/api/status");
+            EXPECT(status && status->status == 200);
+            if (status) {
+                const Json s = parseJson(status->body);
+                EXPECT_EQ(jsonBool(s, "controllerAudioMic"), false);
+                EXPECT_EQ(jsonBool(s, "controllerAudioSpeaker"), true);
+                EXPECT_EQ(jsonBool(s, "controllerAudioHaptics"), false);
+            }
+
+            TEST("GET /api/server/capabilities reports the directions as runtime state");
+            // Asserted as relationships, not absolutes: the block says what will
+            // ACTUALLY flow, so on a lane whose only backend carries no audio at
+            // all (uinput, machid) every field is legitimately false.
+            auto caps = cli.Get("/api/server/capabilities");
+            EXPECT(caps && caps->status == 200);
+            if (caps) {
+                const Json block = jsonObject(parseJson(caps->body), "controllerAudio");
+                const bool enabled = jsonBool(block, "enabled");
+                EXPECT_EQ(jsonBool(block, "mic"), false);
+                EXPECT_EQ(jsonBool(block, "speaker"), enabled);
+                // Switched off above, so false whatever the backend could carry.
+                EXPECT_EQ(jsonBool(block, "hapticAudio"), false);
+            }
+
+            TEST("capabilities: hapticAudio follows its switch AND the DualSense composite");
+            // Narrower than mic/speaker: the lanes exist on one pad's endpoint,
+            // so the field can only be true where a backend can build that pad
+            // with its audio function, i.e. where the catalog says so.
+            auto hapticsOn =
+                cli.Post("/api/config", R"({"controllerAudioHaptics":true})", "application/json");
+            EXPECT(hapticsOn && hapticsOn->status == 200);
+            auto caps3 = cli.Get("/api/server/capabilities");
+            EXPECT(caps3 && caps3->status == 200);
+            if (caps3) {
+                const Json body = parseJson(caps3->body);
+                const Json block = jsonObject(body, "controllerAudio");
+                bool dualsenseHaptics = false;
+                for (const Json& b : body["backends"]) {
+                    for (const Json& c : b["controllers"]) {
+                        if (jsonBool(c, "hapticAudio")) dualsenseHaptics = true;
+                    }
+                }
+                EXPECT_EQ(jsonBool(block, "hapticAudio"),
+                          jsonBool(block, "enabled") && dualsenseHaptics);
+            }
+
+            TEST("POST /api/config: an absent direction key leaves that direction alone");
+            auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
+            EXPECT(other && other->status == 200);
+            {
+                const std::shared_ptr<const Config> cfg = g_configStore->current();
+                EXPECT_EQ(cfg->controllerAudioMic, false);
+                EXPECT_EQ(cfg->controllerAudioSpeaker, true);
+            }
+
+            TEST("the master switch off forces every field false in capabilities");
+            // A pad that never materializes its endpoints streams neither
+            // direction, whatever the direction switches say. This one IS absolute:
+            // no backend can rescue a host that declined the persona.
+            auto restoreDirections = cli.Post(
+                "/api/config", R"({"controllerAudioMic":true,"controllerAudioSpeaker":true})",
+                "application/json");
+            EXPECT(restoreDirections && restoreDirections->status == 200);
+            auto masterOff =
+                cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
+            EXPECT(masterOff && masterOff->status == 200);
+            auto caps2 = cli.Get("/api/server/capabilities");
+            EXPECT(caps2 && caps2->status == 200);
+            if (caps2) {
+                const Json block = jsonObject(parseJson(caps2->body), "controllerAudio");
+                EXPECT_EQ(jsonBool(block, "enabled"), false);
+                EXPECT_EQ(jsonBool(block, "mic"), false);
+                EXPECT_EQ(jsonBool(block, "speaker"), false);
+                EXPECT_EQ(jsonBool(block, "hapticAudio"), false);
+            }
+
+            auto restore = cli.Post(
+                "/api/config",
+                R"({"controllerAudio":true,"controllerAudioMic":true,"controllerAudioSpeaker":true})",
+                "application/json");
+            EXPECT(restore && restore->status == 200);
+        }
+        {
+            TEST("POST /api/config: the default-device guard round-trips");
+            auto off = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":false})",
+                                "application/json");
+            EXPECT(off && off->status == 200);
+            {
+                const std::shared_ptr<const Config> cfg = g_configStore->current();
+                EXPECT_EQ(cfg->controllerAudioKeepDefaultDevice, false);
+            }
+            auto status = cli.Get("/api/status");
+            EXPECT(status && status->status == 200);
+            if (status) {
+                EXPECT_EQ(jsonBool(parseJson(status->body), "controllerAudioKeepDefaultDevice"),
+                          false);
+            }
+            auto on = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":true})",
+                               "application/json");
+            EXPECT(on && on->status == 200);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
+            EXPECT_EQ(cfg->controllerAudioKeepDefaultDevice, true);
+        }
+        {
+            TEST("POST /api/config: autoStart round-trips through the platform hook");
+            auto on = cli.Post("/api/config", R"({"autoStart":true})", "application/json");
+            EXPECT(on && on->status == 200);
+            EXPECT_EQ(getAutoStart(), true);
+            auto off = cli.Post("/api/config", R"({"autoStart":false})", "application/json");
+            EXPECT(off && off->status == 200);
+            EXPECT_EQ(getAutoStart(), false);
+        }
+        {
+            TEST("POST /api/network/allow-public: honest ok:false on POSIX (no-op)");
+            auto res = cli.Post("/api/network/allow-public", "", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT_EQ(jsonBool(parseJson(res->body), "ok"), false);
+            const std::shared_ptr<const Config> cfg = g_configStore->current();
+            EXPECT_EQ(cfg->allowPublicNetwork, false); // only set when the rules applied
         }
 
-        TEST("GET /api/server/capabilities reports the directions as runtime state");
-        // Asserted as relationships, not absolutes: the block says what will
-        // ACTUALLY flow, so on a lane whose only backend carries no audio at
-        // all (uinput, machid) every field is legitimately false.
-        auto caps = cli.Get("/api/server/capabilities");
-        EXPECT(caps && caps->status == 200);
-        if (caps) {
-            const Json block = jsonObject(parseJson(caps->body), "controllerAudio");
-            const bool enabled = jsonBool(block, "enabled");
-            EXPECT_EQ(jsonBool(block, "mic"), false);
-            EXPECT_EQ(jsonBool(block, "speaker"), enabled);
-            // Switched off above, so false whatever the backend could carry.
-            EXPECT_EQ(jsonBool(block, "hapticAudio"), false);
+        // ---- updater routes (updater absent -> honest 503s) --------------------------
+        {
+            TEST("updates: status/check/download/install 503 without an updater");
+            for (auto [method, path] :
+                 {std::pair<const char*, const char*>{"GET", "/api/updates/status"},
+                  {"POST", "/api/updates/check"},
+                  {"POST", "/api/updates/download"},
+                  {"POST", "/api/updates/install"},
+                  {"POST", "/api/updates/retry"},
+                  {"POST", "/api/updates/preferences"}}) {
+                auto res = std::string(method) == "GET" ? cli.Get(path)
+                                                        : cli.Post(path, "{}", "application/json");
+                EXPECT(res && res->status == 503);
+            }
+
+            TEST("updates: cancel/dismiss are no-op 200s without an updater");
+            EXPECT(cli.Post("/api/updates/cancel", "", "application/json")->status == 200);
+            EXPECT(cli.Post("/api/updates/dismiss", "", "application/json")->status == 200);
+
+            TEST("updates: skip without a version is a 400");
+            auto res = cli.Post("/api/updates/skip", "{}", "application/json");
+            EXPECT(res && res->status == 400);
+        }
+        {
+            TEST("updates: with an updater wired, POST check replies with the Checking snapshot");
+            StubUpdater updaterPort;
+            UpdateService updater(updaterPort, log, *g_configStore);
+            g_updateService = &updater;
+            auto check = cli.Post("/api/updates/check", "", "application/json");
+            EXPECT(check && check->status == 200);
+            if (check) EXPECT_EQ(jsonStr(parseJson(check->body), "state"), std::string("checking"));
+
+            TEST("updates: GET status reports the offer the worker found, with its dismissed flag");
+            updater.start();
+            EXPECT_EQ(waitForUpdateState(cli, "update-available"), std::string("update-available"));
+            updater.stop();
+            auto status = cli.Get("/api/updates/status");
+            EXPECT(status && status->status == 200);
+            if (status) {
+                const Json j = parseJson(status->body);
+                EXPECT(j.contains("dismissed") && j["dismissed"].is_boolean());
+                EXPECT_EQ(jsonBool(j, "dismissed"), false);
+            }
+
+            TEST("updates: POST download from update-available replies Downloading");
+            auto download = cli.Post("/api/updates/download", "", "application/json");
+            EXPECT(download && download->status == 200);
+            if (download) {
+                EXPECT_EQ(jsonStr(parseJson(download->body), "state"), std::string("downloading"));
+            }
+
+            TEST("updates: POST cancel of a queued download replies with the offer again");
+            auto cancel = cli.Post("/api/updates/cancel", "", "application/json");
+            EXPECT(cancel && cancel->status == 200);
+            if (cancel) {
+                EXPECT_EQ(jsonStr(parseJson(cancel->body), "state"),
+                          std::string("update-available"));
+            }
+
+            TEST("updates: POST dismiss replies with the offer marked dismissed");
+            auto dismiss = cli.Post("/api/updates/dismiss", "", "application/json");
+            EXPECT(dismiss && dismiss->status == 200);
+            if (dismiss) {
+                const Json j = parseJson(dismiss->body);
+                EXPECT_EQ(jsonStr(j, "state"), std::string("update-available"));
+                EXPECT_EQ(jsonBool(j, "dismissed"), true);
+            }
+
+            TEST("updates: POST install with nothing staged replies with the state it left alone");
+            auto install = cli.Post("/api/updates/install", "", "application/json");
+            EXPECT(install && install->status == 200);
+            if (install) {
+                EXPECT_EQ(jsonStr(parseJson(install->body), "state"),
+                          std::string("update-available"));
+            }
+
+            TEST("updates: POST preferences replies with the snapshot");
+            auto prefs = cli.Post("/api/updates/preferences",
+                                  R"({"channel":"stable","autoCheck":true})", "application/json");
+            EXPECT(prefs && prefs->status == 200);
+            if (prefs) {
+                const Json j = parseJson(prefs->body);
+                EXPECT_EQ(jsonStr(j, "channel"), std::string("stable"));
+                EXPECT_EQ(jsonBool(j, "autoCheck"), true);
+                EXPECT_EQ(jsonStr(j, "state"), std::string("update-available"));
+            }
+
+            TEST("updates: POST skip replies with the cleared snapshot");
+            auto skip =
+                cli.Post("/api/updates/skip", R"({"version":"99.0.0"})", "application/json");
+            EXPECT(skip && skip->status == 200);
+            if (skip) EXPECT_EQ(jsonStr(parseJson(skip->body), "state"), std::string("idle"));
+
+            TEST("updates: POST retry after a failed check replies Checking");
+            updaterPort.fetchOk = false;
+            auto failing = cli.Post("/api/updates/check", "", "application/json");
+            EXPECT(failing && failing->status == 200);
+            updater.start();
+            EXPECT_EQ(waitForUpdateState(cli, "error"), std::string("error"));
+            updater.stop();
+            auto retry = cli.Post("/api/updates/retry", "", "application/json");
+            EXPECT(retry && retry->status == 200);
+            if (retry) EXPECT_EQ(jsonStr(parseJson(retry->body), "state"), std::string("checking"));
+
+            TEST("updates: POST repair while a check is queued replies with that check");
+            auto repair = cli.Post("/api/updates/repair", "", "application/json");
+            EXPECT(repair && repair->status == 200);
+            if (repair)
+                EXPECT_EQ(jsonStr(parseJson(repair->body), "state"), std::string("checking"));
+
+            g_updateService = nullptr;
         }
 
-        TEST("capabilities: hapticAudio follows its switch AND the DualSense composite");
-        // Narrower than mic/speaker: the lanes exist on one pad's endpoint,
-        // so the field can only be true where a backend can build that pad
-        // with its audio function, i.e. where the catalog says so.
-        auto hapticsOn =
-            cli.Post("/api/config", R"({"controllerAudioHaptics":true})", "application/json");
-        EXPECT(hapticsOn && hapticsOn->status == 200);
-        auto caps3 = cli.Get("/api/server/capabilities");
-        EXPECT(caps3 && caps3->status == 200);
-        if (caps3) {
-            const Json body = parseJson(caps3->body);
-            const Json block = jsonObject(body, "controllerAudio");
-            bool dualsenseHaptics = false;
-            for (const Json& b : body["backends"]) {
-                for (const Json& c : b["controllers"]) {
-                    if (jsonBool(c, "hapticAudio")) dualsenseHaptics = true;
+        // ---- PIN status ---------------------------------------------------------------
+        {
+            TEST("GET /api/pin/status: live 4-digit PIN + rotation countdown");
+            auto res = cli.Get("/api/pin/status");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                std::string pin = jsonStr(j, "currentPin");
+                EXPECT_EQ(pin.size(), size_t{4});
+                EXPECT(pin.find_first_not_of("0123456789") == std::string::npos);
+                EXPECT(jsonInt(j, "secondsRemaining") > 0);
+                EXPECT(jsonInt(j, "secondsRemaining") <= 300);
+                EXPECT(jsonStr(j, "state") == "active" || jsonStr(j, "state") == "paired");
+            }
+        }
+
+        // ---- reverse pairing (path B, operator side) ------------------------------------
+        {
+            TEST("GET /api/pair/requests: empty before any request");
+            auto res = cli.Get("/api/pair/requests");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.is_array() && j.empty());
+            }
+        }
+        {
+            TEST("a submitted dish request appears with its PIN for the operator");
+            submitPairRequest("dev-adm-1", "AdmDev", "192.168.7.9", "9876");
+            auto res = cli.Get("/api/pair/requests");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.is_array() && j.size() == 1);
+                if (j.is_array() && j.size() == 1) {
+                    EXPECT_EQ(jsonStr(j[0], "deviceId"), std::string("dev-adm-1"));
+                    EXPECT_EQ(jsonStr(j[0], "pin"), std::string("9876"));
+                    EXPECT_EQ(jsonStr(j[0], "clientIP"), std::string("192.168.7.9"));
                 }
             }
-            EXPECT_EQ(jsonBool(block, "hapticAudio"),
-                      jsonBool(block, "enabled") && dualsenseHaptics);
         }
-
-        TEST("POST /api/config: an absent direction key leaves that direction alone");
-        auto other = cli.Post("/api/config", R"({"udpPort":4242})", "application/json");
-        EXPECT(other && other->status == 200);
         {
-            const std::shared_ptr<const Config> cfg = g_configStore->current();
-            EXPECT_EQ(cfg->controllerAudioMic, false);
-            EXPECT_EQ(cfg->controllerAudioSpeaker, true);
+            TEST("POST /api/pair/respond: deny clears the request, pairs nothing");
+            auto res = cli.Post("/api/pair/respond", R"({"deviceId":"dev-adm-1","accept":false})",
+                                "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonBool(j, "accepted"), false);
+            }
+            EXPECT_EQ(storedKeyHex("dev-adm-1"), std::string(""));
+            auto list = cli.Get("/api/pair/requests");
+            if (list) EXPECT(parseJson(list->body).empty());
         }
-
-        TEST("the master switch off forces every field false in capabilities");
-        // A pad that never materializes its endpoints streams neither
-        // direction, whatever the direction switches say. This one IS absolute:
-        // no backend can rescue a host that declined the persona.
-        auto restoreDirections =
-            cli.Post("/api/config", R"({"controllerAudioMic":true,"controllerAudioSpeaker":true})",
-                     "application/json");
-        EXPECT(restoreDirections && restoreDirections->status == 200);
-        auto masterOff =
-            cli.Post("/api/config", R"({"controllerAudio":false})", "application/json");
-        EXPECT(masterOff && masterOff->status == 200);
-        auto caps2 = cli.Get("/api/server/capabilities");
-        EXPECT(caps2 && caps2->status == 200);
-        if (caps2) {
-            const Json block = jsonObject(parseJson(caps2->body), "controllerAudio");
-            EXPECT_EQ(jsonBool(block, "enabled"), false);
-            EXPECT_EQ(jsonBool(block, "mic"), false);
-            EXPECT_EQ(jsonBool(block, "speaker"), false);
-            EXPECT_EQ(jsonBool(block, "hapticAudio"), false);
-        }
-
-        auto restore = cli.Post(
-            "/api/config",
-            R"({"controllerAudio":true,"controllerAudioMic":true,"controllerAudioSpeaker":true})",
-            "application/json");
-        EXPECT(restore && restore->status == 200);
-    }
-    {
-        TEST("POST /api/config: the default-device guard round-trips");
-        auto off = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":false})",
-                            "application/json");
-        EXPECT(off && off->status == 200);
         {
-            const std::shared_ptr<const Config> cfg = g_configStore->current();
-            EXPECT_EQ(cfg->controllerAudioKeepDefaultDevice, false);
+            TEST("POST /api/pair/respond: accept mints + persists a key");
+            submitPairRequest("dev-adm-2", "AdmDev2", "192.168.7.10", "1234");
+            auto res = cli.Post("/api/pair/respond", R"({"deviceId":"dev-adm-2","accept":true})",
+                                "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonBool(j, "accepted"), true);
+            }
+            std::string key = storedKeyHex("dev-adm-2");
+            EXPECT_EQ(key.size(), size_t{64});
+            EXPECT(key.find_first_not_of("0123456789abcdef") == std::string::npos);
         }
-        auto status = cli.Get("/api/status");
-        EXPECT(status && status->status == 200);
-        if (status) {
-            EXPECT_EQ(jsonBool(parseJson(status->body), "controllerAudioKeepDefaultDevice"), false);
-        }
-        auto on = cli.Post("/api/config", R"({"controllerAudioKeepDefaultDevice":true})",
-                           "application/json");
-        EXPECT(on && on->status == 200);
-        const std::shared_ptr<const Config> cfg = g_configStore->current();
-        EXPECT_EQ(cfg->controllerAudioKeepDefaultDevice, true);
-    }
-    {
-        TEST("POST /api/config: autoStart round-trips through the platform hook");
-        auto on = cli.Post("/api/config", R"({"autoStart":true})", "application/json");
-        EXPECT(on && on->status == 200);
-        EXPECT_EQ(getAutoStart(), true);
-        auto off = cli.Post("/api/config", R"({"autoStart":false})", "application/json");
-        EXPECT(off && off->status == 200);
-        EXPECT_EQ(getAutoStart(), false);
-    }
-    {
-        TEST("POST /api/network/allow-public: honest ok:false on POSIX (no-op)");
-        auto res = cli.Post("/api/network/allow-public", "", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT_EQ(jsonBool(parseJson(res->body), "ok"), false);
-        const std::shared_ptr<const Config> cfg = g_configStore->current();
-        EXPECT_EQ(cfg->allowPublicNetwork, false); // only set when the rules applied
-    }
+        {
+            TEST("POST /api/pair/respond: missing deviceId is a 400");
+            auto res = cli.Post("/api/pair/respond", R"({"accept":true})", "application/json");
+            EXPECT(res && res->status == 400);
 
-    // ---- updater routes (updater absent -> honest 503s) --------------------------
-    {
-        TEST("updates: status/check/download/install 503 without an updater");
-        for (auto [method, path] :
-             {std::pair<const char*, const char*>{"GET", "/api/updates/status"},
-              {"POST", "/api/updates/check"},
-              {"POST", "/api/updates/download"},
-              {"POST", "/api/updates/install"},
-              {"POST", "/api/updates/retry"},
-              {"POST", "/api/updates/preferences"}}) {
-            auto res = std::string(method) == "GET" ? cli.Get(path)
-                                                    : cli.Post(path, "{}", "application/json");
-            EXPECT(res && res->status == 503);
-        }
-
-        TEST("updates: cancel/dismiss are no-op 200s without an updater");
-        EXPECT(cli.Post("/api/updates/cancel", "", "application/json")->status == 200);
-        EXPECT(cli.Post("/api/updates/dismiss", "", "application/json")->status == 200);
-
-        TEST("updates: skip without a version is a 400");
-        auto res = cli.Post("/api/updates/skip", "{}", "application/json");
-        EXPECT(res && res->status == 400);
-    }
-    {
-        TEST("updates: with an updater wired, POST check replies with the Checking snapshot");
-        StubUpdater updaterPort;
-        UpdateService updater(updaterPort, log, *g_configStore);
-        g_updateService = &updater;
-        auto check = cli.Post("/api/updates/check", "", "application/json");
-        EXPECT(check && check->status == 200);
-        if (check) EXPECT_EQ(jsonStr(parseJson(check->body), "state"), std::string("checking"));
-
-        TEST("updates: GET status reports the offer the worker found, with its dismissed flag");
-        updater.start();
-        EXPECT_EQ(waitForUpdateState(cli, "update-available"), std::string("update-available"));
-        updater.stop();
-        auto status = cli.Get("/api/updates/status");
-        EXPECT(status && status->status == 200);
-        if (status) {
-            const Json j = parseJson(status->body);
-            EXPECT(j.contains("dismissed") && j["dismissed"].is_boolean());
-            EXPECT_EQ(jsonBool(j, "dismissed"), false);
-        }
-
-        TEST("updates: POST download from update-available replies Downloading");
-        auto download = cli.Post("/api/updates/download", "", "application/json");
-        EXPECT(download && download->status == 200);
-        if (download) {
-            EXPECT_EQ(jsonStr(parseJson(download->body), "state"), std::string("downloading"));
-        }
-
-        TEST("updates: POST cancel of a queued download replies with the offer again");
-        auto cancel = cli.Post("/api/updates/cancel", "", "application/json");
-        EXPECT(cancel && cancel->status == 200);
-        if (cancel) {
-            EXPECT_EQ(jsonStr(parseJson(cancel->body), "state"), std::string("update-available"));
-        }
-
-        TEST("updates: POST dismiss replies with the offer marked dismissed");
-        auto dismiss = cli.Post("/api/updates/dismiss", "", "application/json");
-        EXPECT(dismiss && dismiss->status == 200);
-        if (dismiss) {
-            const Json j = parseJson(dismiss->body);
-            EXPECT_EQ(jsonStr(j, "state"), std::string("update-available"));
-            EXPECT_EQ(jsonBool(j, "dismissed"), true);
-        }
-
-        TEST("updates: POST install with nothing staged replies with the state it left alone");
-        auto install = cli.Post("/api/updates/install", "", "application/json");
-        EXPECT(install && install->status == 200);
-        if (install) {
-            EXPECT_EQ(jsonStr(parseJson(install->body), "state"), std::string("update-available"));
-        }
-
-        TEST("updates: POST preferences replies with the snapshot");
-        auto prefs = cli.Post("/api/updates/preferences",
-                              R"({"channel":"stable","autoCheck":true})", "application/json");
-        EXPECT(prefs && prefs->status == 200);
-        if (prefs) {
-            const Json j = parseJson(prefs->body);
-            EXPECT_EQ(jsonStr(j, "channel"), std::string("stable"));
-            EXPECT_EQ(jsonBool(j, "autoCheck"), true);
-            EXPECT_EQ(jsonStr(j, "state"), std::string("update-available"));
-        }
-
-        TEST("updates: POST skip replies with the cleared snapshot");
-        auto skip = cli.Post("/api/updates/skip", R"({"version":"99.0.0"})", "application/json");
-        EXPECT(skip && skip->status == 200);
-        if (skip) EXPECT_EQ(jsonStr(parseJson(skip->body), "state"), std::string("idle"));
-
-        TEST("updates: POST retry after a failed check replies Checking");
-        updaterPort.fetchOk = false;
-        auto failing = cli.Post("/api/updates/check", "", "application/json");
-        EXPECT(failing && failing->status == 200);
-        updater.start();
-        EXPECT_EQ(waitForUpdateState(cli, "error"), std::string("error"));
-        updater.stop();
-        auto retry = cli.Post("/api/updates/retry", "", "application/json");
-        EXPECT(retry && retry->status == 200);
-        if (retry) EXPECT_EQ(jsonStr(parseJson(retry->body), "state"), std::string("checking"));
-
-        TEST("updates: POST repair while a check is queued replies with that check");
-        auto repair = cli.Post("/api/updates/repair", "", "application/json");
-        EXPECT(repair && repair->status == 200);
-        if (repair) EXPECT_EQ(jsonStr(parseJson(repair->body), "state"), std::string("checking"));
-
-        g_updateService = nullptr;
-    }
-
-    // ---- PIN status ---------------------------------------------------------------
-    {
-        TEST("GET /api/pin/status: live 4-digit PIN + rotation countdown");
-        auto res = cli.Get("/api/pin/status");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            std::string pin = jsonStr(j, "currentPin");
-            EXPECT_EQ(pin.size(), size_t{4});
-            EXPECT(pin.find_first_not_of("0123456789") == std::string::npos);
-            EXPECT(jsonInt(j, "secondsRemaining") > 0);
-            EXPECT(jsonInt(j, "secondsRemaining") <= 300);
-            EXPECT(jsonStr(j, "state") == "active" || jsonStr(j, "state") == "paired");
-        }
-    }
-
-    // ---- reverse pairing (path B, operator side) ------------------------------------
-    {
-        TEST("GET /api/pair/requests: empty before any request");
-        auto res = cli.Get("/api/pair/requests");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.is_array() && j.empty());
-        }
-    }
-    {
-        TEST("a submitted dish request appears with its PIN for the operator");
-        submitPairRequest("dev-adm-1", "AdmDev", "192.168.7.9", "9876");
-        auto res = cli.Get("/api/pair/requests");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.is_array() && j.size() == 1);
-            if (j.is_array() && j.size() == 1) {
-                EXPECT_EQ(jsonStr(j[0], "deviceId"), std::string("dev-adm-1"));
-                EXPECT_EQ(jsonStr(j[0], "pin"), std::string("9876"));
-                EXPECT_EQ(jsonStr(j[0], "clientIP"), std::string("192.168.7.9"));
+            TEST("POST /api/pair/respond: accept with nothing pending is ok:false");
+            auto none = cli.Post("/api/pair/respond", R"({"deviceId":"dev-ghost","accept":true})",
+                                 "application/json");
+            EXPECT(none && none->status == 200);
+            if (none) {
+                Json j = parseJson(none->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonStr(j, "error"), std::string("no pending request"));
             }
         }
-    }
-    {
-        TEST("POST /api/pair/respond: deny clears the request, pairs nothing");
-        auto res = cli.Post("/api/pair/respond", R"({"deviceId":"dev-adm-1","accept":false})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonBool(j, "accepted"), false);
-        }
-        EXPECT_EQ(storedKeyHex("dev-adm-1"), std::string(""));
-        auto list = cli.Get("/api/pair/requests");
-        if (list) EXPECT(parseJson(list->body).empty());
-    }
-    {
-        TEST("POST /api/pair/respond: accept mints + persists a key");
-        submitPairRequest("dev-adm-2", "AdmDev2", "192.168.7.10", "1234");
-        auto res = cli.Post("/api/pair/respond", R"({"deviceId":"dev-adm-2","accept":true})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonBool(j, "accepted"), true);
-        }
-        std::string key = storedKeyHex("dev-adm-2");
-        EXPECT_EQ(key.size(), size_t{64});
-        EXPECT(key.find_first_not_of("0123456789abcdef") == std::string::npos);
-    }
-    {
-        TEST("POST /api/pair/respond: missing deviceId is a 400");
-        auto res = cli.Post("/api/pair/respond", R"({"accept":true})", "application/json");
-        EXPECT(res && res->status == 400);
 
-        TEST("POST /api/pair/respond: accept with nothing pending is ok:false");
-        auto none = cli.Post("/api/pair/respond", R"({"deviceId":"dev-ghost","accept":true})",
-                             "application/json");
-        EXPECT(none && none->status == 200);
-        if (none) {
-            Json j = parseJson(none->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonStr(j, "error"), std::string("no pending request"));
-        }
-    }
-
-    // ---- devices ---------------------------------------------------------------------
-    {
-        TEST("GET /api/devices: paired device listed with link state");
-        auto res = cli.Get("/api/devices");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.is_array() && j.size() == 1);
-            if (j.is_array() && j.size() == 1) {
-                EXPECT_EQ(jsonStr(j[0], "id"), std::string("dev-adm-2"));
-                EXPECT_EQ(jsonStr(j[0], "state"), std::string("paired"));
-            }
-        }
-    }
-    {
-        TEST("DELETE /api/devices/:id unpairs");
-        auto res = cli.Delete("/api/devices/dev-adm-2");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonInt(j, "sessionsClosed"), 0L);
-        }
-        EXPECT_EQ(storedKeyHex("dev-adm-2"), std::string(""));
-
-        TEST("DELETE /api/devices/:id twice: 404");
-        auto gone = cli.Delete("/api/devices/dev-adm-2");
-        EXPECT(gone && gone->status == 404);
-    }
-
-    // ---- connections (admin view + kick) -----------------------------------------
-    std::string connId;
-    {
-        TEST("GET /api/connections: empty scaffold first");
-        auto res = cli.Get("/api/connections");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.contains("connections") && j["connections"].is_array() &&
-                   j["connections"].empty());
-            EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
-        }
-
-        TEST("a live session appears with its controllers");
-        uint8_t key[CRYPTO_KEY_SIZE] = {};
-        ControllerDescriptor d;
-        d.ctrlIdx = 0;
-        d.type = CONTROLLER_TYPE_XBOX;
-        d.caps = CAP_RUMBLE;
-        auto up = svc.upsertSession("dev-conn", "ConnDev", "192.168.7.11", key, {d}, false);
-        EXPECT(up.ok);
-        connId = up.connectionId;
-        auto live = cli.Get("/api/connections");
-        EXPECT(live && live->status == 200);
-        if (live) {
-            Json j = parseJson(live->body);
-            EXPECT(j["connections"].is_array() && j["connections"].size() == 1);
-            if (j["connections"].size() == 1) {
-                const Json& c = j["connections"][0];
-                EXPECT_EQ(jsonStr(c, "connectionId"), connId);
-                EXPECT_EQ(jsonStr(c, "deviceId"), std::string("dev-conn"));
-                EXPECT_EQ(jsonStr(c, "state"), std::string("active"));
-                EXPECT(c.contains("controllers") && c["controllers"].is_array() &&
-                       c["controllers"].size() == 1);
-                if (c["controllers"].size() == 1) {
-                    EXPECT_EQ(jsonStr(c["controllers"][0], "state"), std::string("live"));
-                    EXPECT_EQ(jsonStr(c["controllers"][0], "controllerType"), std::string("xbox"));
-                    // Pins the divergence: wire says xbox, artwork says xbox360.
-                    EXPECT_EQ(jsonStr(c["controllers"][0], "catalogSlug"), std::string("xbox360"));
+        // ---- devices ---------------------------------------------------------------------
+        {
+            TEST("GET /api/devices: paired device listed with link state");
+            auto res = cli.Get("/api/devices");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.is_array() && j.size() == 1);
+                if (j.is_array() && j.size() == 1) {
+                    EXPECT_EQ(jsonStr(j[0], "id"), std::string("dev-adm-2"));
+                    EXPECT_EQ(jsonStr(j[0], "state"), std::string("paired"));
                 }
             }
-            EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);
         }
-
-        TEST("a controller its host disabled reads disabled, and stays in its session");
-        gamepad.disabled.store(true);
-        auto off = cli.Get("/api/connections");
-        EXPECT(off && off->status == 200);
-        if (off) {
-            Json j = parseJson(off->body);
-            const bool one =
-                j["connections"].size() == 1 && j["connections"][0]["controllers"].size() == 1;
-            EXPECT(one);
-            if (one) {
-                EXPECT_EQ(jsonStr(j["connections"][0]["controllers"][0], "state"),
-                          std::string("disabled"));
+        {
+            TEST("DELETE /api/devices/:id unpairs");
+            auto res = cli.Delete("/api/devices/dev-adm-2");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonInt(j, "sessionsClosed"), 0L);
             }
-            EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);
-        }
-        gamepad.disabled.store(false);
+            EXPECT_EQ(storedKeyHex("dev-adm-2"), std::string(""));
 
-        TEST("a controller whose XInput device alone its host disabled reads live and names it");
-        gamepad.xinputDisabled.store(true);
-        auto partly = cli.Get("/api/connections");
-        EXPECT(partly && partly->status == 200);
-        if (partly) {
-            Json c = parseJson(partly->body)["connections"][0]["controllers"][0];
-            EXPECT_EQ(jsonStr(c, "state"), std::string("live"));
-            EXPECT(c["disabledInWindows"] == Json::array({"xinput"}));
-        }
-        gamepad.xinputDisabled.store(false);
-
-        TEST("a controller its backend refused reads failed, not a stale disabled");
-        gamepad.refused.store(true);
-        gamepad.disabled.store(true);
-        auto refused = cli.Get("/api/connections");
-        EXPECT(refused && refused->status == 200);
-        if (refused) {
-            Json c = parseJson(refused->body)["connections"][0]["controllers"][0];
-            EXPECT_EQ(jsonStr(c, "state"), std::string("failed"));
-        }
-        gamepad.refused.store(false);
-        gamepad.disabled.store(false);
-    }
-    {
-        TEST("admin kick: DELETE /api/connections/:id closes WITH close-notify");
-        int notifiesBefore = clientPort.closeNotifies;
-        auto res = cli.Delete("/api/connections/" + connId);
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonInt(j, "controllersRemoved"), 1L);
-        }
-        EXPECT_EQ(clientPort.closeNotifies, notifiesBefore + 1);
-
-        TEST("kick of an unknown connection: 404");
-        auto gone = cli.Delete("/api/connections/conn_ffffffff");
-        EXPECT(gone && gone->status == 404);
-    }
-
-    // ---- log ring ---------------------------------------------------------------------
-    {
-        TEST("GET /api/logs: monotonic seq + a just-written marker entry");
-        logMsg(LogLevel::INFO, "route-test", "marker-entry-xyzzy");
-        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto res = cli.Get("/api/logs");
-        EXPECT(res && res->status == 200);
-        uint64_t seq = 0;
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.contains("entries") && j["entries"].is_array());
-            seq = static_cast<uint64_t>(jsonInt(j, "seq"));
-            EXPECT(seq > 0);
-            EXPECT(res->body.find("marker-entry-xyzzy") != std::string::npos);
+            TEST("DELETE /api/devices/:id twice: 404");
+            auto gone = cli.Delete("/api/devices/dev-adm-2");
+            EXPECT(gone && gone->status == 404);
         }
 
-        TEST("GET /api/logs?since=<head>: nothing new");
-        auto res2 = cli.Get("/api/logs?since=" + std::to_string(seq));
-        EXPECT(res2 && res2->status == 200);
-        if (res2) {
-            Json j = parseJson(res2->body);
-            EXPECT(j.contains("entries") && j["entries"].is_array() && j["entries"].empty());
-        }
-
-        // The viewer sends back the `seq` it was given, so the entry written right after
-        // that reply has to be the first one in the next. It used to be skipped.
-        TEST("GET /api/logs?since=<seq>: the entry written after that seq is the first back");
-        logMsg(LogLevel::INFO, "route-test", "marker-after-seq");
-        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto res3 = cli.Get("/api/logs?since=" + std::to_string(seq));
-        EXPECT(res3 && res3->status == 200);
-        if (res3) {
-            Json j = parseJson(res3->body);
-            const bool haveEntries =
-                j.contains("entries") && j["entries"].is_array() && !j["entries"].empty();
-            EXPECT(haveEntries);
-            if (haveEntries) {
-                EXPECT(static_cast<uint64_t>(jsonInt(j["entries"][0], "seq")) == seq);
-                EXPECT(res3->body.find("marker-after-seq") != std::string::npos);
+        // ---- connections (admin view + kick) -----------------------------------------
+        std::string connId;
+        {
+            TEST("GET /api/connections: empty scaffold first");
+            auto res = cli.Get("/api/connections");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.contains("connections") && j["connections"].is_array() &&
+                       j["connections"].empty());
+                EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
             }
-        }
-    }
 
-    // ---- controller database, Test button, diagnostics ---------------------------
-    {
-        TEST("GET /api/controller-db/status: 503 before the database is loaded");
-        auto res = cli.Get("/api/controller-db/status");
-        EXPECT(res && res->status == 503);
-    }
-    {
-        ControllerDbAdapter dbAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path, nullptr,
-                                      atomicWriteFile);
-        satellite::ControllerDbService controllerDb(dbAdapter, log, *g_configStore);
-        EXPECT(controllerDb.load());
-        g_controllerDbService = &controllerDb;
-
-        TEST("GET /api/controller-db/status: the bundled copy, never checked");
-        auto res = cli.Get("/api/controller-db/status");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            const Json j = parseJson(res->body);
-            EXPECT_EQ(jsonInt(j, "bundledVersion"), 1L);
-            EXPECT_EQ(jsonInt(j, "activeVersion"), 1L);
-            EXPECT_EQ(jsonStr(j, "source"), std::string("bundled"));
-            EXPECT(j.contains("lastCheckAt") && j["lastCheckAt"].is_null());
-            EXPECT(jsonBool(j, "enabled"));
-        }
-
-        TEST("POST /api/controller-db/check: answers with the status at once");
-        auto check = cli.Post("/api/controller-db/check", "", "application/json");
-        EXPECT(check && check->status == 200);
-
-        // A live worker over a GET that counts, so "nothing leaves the PC" is
-        // observed rather than inferred.
-        std::atomic<int> gets{0};
-        const DbHttpGet countingGet = [&gets](const std::string&, const std::string&) {
-            gets++;
-            return DbFetchResponse{};
-        };
-        ControllerDbAdapter liveAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path,
-                                        countingGet, atomicWriteFile);
-        satellite::ControllerDbService live(liveAdapter, log, *g_configStore);
-        live.load();
-        g_controllerDbService = &live;
-        live.start();
-        const auto checkSettles = [&cli](const std::string& want) {
-            for (int i = 0; i < 200; i++) {
-                auto r = cli.Get("/api/controller-db/status");
-                if (r && jsonStr(parseJson(r->body), "lastCheckResult") == want) return true;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            TEST("a live session appears with its controllers");
+            uint8_t key[CRYPTO_KEY_SIZE] = {};
+            ControllerDescriptor d;
+            d.ctrlIdx = 0;
+            d.type = CONTROLLER_TYPE_XBOX;
+            d.caps = CAP_RUMBLE;
+            auto up = svc.upsertSession("dev-conn", "ConnDev", "192.168.7.11", key, {d}, false);
+            EXPECT(up.ok);
+            connId = up.connectionId;
+            auto live = cli.Get("/api/connections");
+            EXPECT(live && live->status == 200);
+            if (live) {
+                Json j = parseJson(live->body);
+                EXPECT(j["connections"].is_array() && j["connections"].size() == 1);
+                if (j["connections"].size() == 1) {
+                    const Json& c = j["connections"][0];
+                    EXPECT_EQ(jsonStr(c, "connectionId"), connId);
+                    EXPECT_EQ(jsonStr(c, "deviceId"), std::string("dev-conn"));
+                    EXPECT_EQ(jsonStr(c, "state"), std::string("active"));
+                    EXPECT(c.contains("controllers") && c["controllers"].is_array() &&
+                           c["controllers"].size() == 1);
+                    if (c["controllers"].size() == 1) {
+                        EXPECT_EQ(jsonStr(c["controllers"][0], "state"), std::string("live"));
+                        EXPECT_EQ(jsonStr(c["controllers"][0], "controllerType"),
+                                  std::string("xbox"));
+                        // Pins the divergence: wire says xbox, artwork says xbox360.
+                        EXPECT_EQ(jsonStr(c["controllers"][0], "catalogSlug"),
+                                  std::string("xbox360"));
+                    }
+                }
+                EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);
             }
-            return false;
-        };
 
-        TEST("POST /api/controller-db/check with the switch off: no request leaves, result off");
-        auto off = cli.Post("/api/config", R"({"controllerDbUpdates":false})", "application/json");
-        EXPECT(off && off->status == 200);
-        auto offCheck = cli.Post("/api/controller-db/check", "", "application/json");
-        EXPECT(offCheck && offCheck->status == 200);
-        if (offCheck) EXPECT(!jsonBool(parseJson(offCheck->body), "enabled", true));
-        EXPECT(checkSettles("off"));
-        EXPECT_EQ(gets.load(), 0);
-
-        TEST("POST /api/controller-db/check with the switch on: one manifest request");
-        auto on = cli.Post("/api/config", R"({"controllerDbUpdates":true})", "application/json");
-        EXPECT(on && on->status == 200);
-        cli.Post("/api/controller-db/check", "", "application/json");
-        EXPECT(checkSettles("offline"));
-        EXPECT_EQ(gets.load(), 1);
-        live.stop();
-        g_controllerDbService = &controllerDb;
-
-        const uint8_t key[CRYPTO_KEY_SIZE] = {7};
-        ControllerDescriptor pad;
-        pad.ctrlIdx = 0;
-        pad.type = CONTROLLER_TYPE_DUALSENSE;
-        pad.caps = CAP_RUMBLE | CAP_LIGHTBAR;
-        const auto session =
-            svc.upsertSession("dish-route-diag", "Route Pixel", "192.168.77.5", key, {pad}, false);
-        const std::string base = "/api/connections/" + session.connectionId + "/controllers/";
-
-        TEST("POST .../controllers/:idx/test: the claimed lanes are sent, the rest skipped");
-        auto test = cli.Post(base + "0/test", R"({"lanes":["rumble","lightbar","playerLeds"]})",
-                             "application/json");
-        EXPECT(test && test->status == 200);
-        if (test) {
-            const Json j = parseJson(test->body);
-            EXPECT_EQ(j["sent"].dump(), std::string(R"(["rumble","lightbar"])"));
-            EXPECT_EQ(j["skipped"].dump(), std::string(R"(["playerLeds"])"));
-        }
-        EXPECT_EQ(clientPort.rumbles.load(), 1);
-        EXPECT_EQ(clientPort.lightbars.load(), 1);
-
-        TEST("POST .../test: an unknown lane is a 400, an empty slot or session a 404");
-        auto badLane = cli.Post(base + "0/test", R"({"lanes":["speaker"]})", "application/json");
-        EXPECT(badLane && badLane->status == 400);
-        auto noLanes = cli.Post(base + "0/test", "{}", "application/json");
-        EXPECT(noLanes && noLanes->status == 400);
-
-        TEST("POST .../test: naming micLed is a 400 that names it, and sends nothing");
-        const int rumblesBefore = clientPort.rumbles.load();
-        auto micLed =
-            cli.Post(base + "0/test", R"({"lanes":["rumble","micLed"]})", "application/json");
-        EXPECT(micLed && micLed->status == 400);
-        if (micLed) EXPECT(micLed->body.find("micLed") != std::string::npos);
-        EXPECT_EQ(clientPort.rumbles.load(), rumblesBefore);
-        EXPECT_EQ(clientPort.micLeds.load(), 0);
-        auto emptySlot = cli.Post(base + "5/test", R"({"lanes":["rumble"]})", "application/json");
-        EXPECT(emptySlot && emptySlot->status == 404);
-        auto noSession = cli.Post("/api/connections/conn_nothere/controllers/0/test",
-                                  R"({"lanes":["rumble"]})", "application/json");
-        EXPECT(noSession && noSession->status == 404);
-
-        TEST("GET /api/connections: each controller carries its caps and lastGameOutput");
-        auto conns = cli.Get("/api/connections");
-        EXPECT(conns && conns->status == 200);
-        if (conns) {
-            const Json j = parseJson(conns->body);
-            const Json& c = j["connections"][0]["controllers"][0];
-            EXPECT(jsonBool(jsonObject(c, "caps"), "rumble"));
-            EXPECT(!jsonBool(jsonObject(c, "caps"), "mic"));
-            EXPECT(c.contains("lastGameOutput") && c["lastGameOutput"].is_null());
-        }
-
-        TEST("GET /api/diagnostics: the satellite bundle, with the client as Host 1");
-        logMsg(LogLevel::INFO, "client",
-               "Session from Route Pixel (dish-route-diag) at 192.168.77.5");
-        char host[256] = {};
-        gethostname(host, sizeof(host) - 1);
-        const std::string hostName(host);
-        logMsg(LogLevel::INFO, "mdns", "Announcing " + hostName + "._satellite._udp.local.");
-        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto diag = cli.Get("/api/diagnostics");
-        EXPECT(diag && diag->status == 200);
-        if (diag) {
-            const Json j = parseJson(diag->body);
-            EXPECT_EQ(jsonInt(j, "bundle"), 1L);
-            EXPECT_EQ(jsonStr(jsonObject(j, "app"), "name"), std::string("satellite"));
-            EXPECT_EQ(jsonStr(j["hosts"][0], "alias"), std::string("Host 1"));
-            EXPECT_EQ(jsonStr(j["controllers"][0], "type"), std::string("dualsense"));
-            EXPECT(jsonBool(jsonObject(j["controllers"][0], "caps"), "lightbar"));
-            EXPECT(diag->body.find("Session from Host 1 (Host 1) at Host 1") != std::string::npos);
-            EXPECT_EQ(jsonInt(jsonObject(j, "controllerDb"), "bundledVersion"), 1L);
-            EXPECT(j.contains("debug") && j.contains("backends") && j.contains("log"));
-
-            TEST("GET /api/diagnostics: no client id, name or address anywhere in the file");
-            EXPECT(diag->body.find("dish-route-diag") == std::string::npos);
-            EXPECT(diag->body.find("Route Pixel") == std::string::npos);
-            EXPECT(diag->body.find("192.168.77.5") == std::string::npos);
-
-            TEST("GET /api/diagnostics: the machine's name is \"this PC\" in the log");
-            EXPECT(diag->body.find("Announcing this PC._satellite._udp.local.") !=
-                   std::string::npos);
-            if (hostName.size() >= 6) EXPECT(diag->body.find(hostName) == std::string::npos);
-
-            TEST("GET /api/diagnostics: each virtual controller carries its input and output");
-            const Json& c = j["controllers"][0];
-            EXPECT(jsonObject(c, "input").contains("frames"));
-            EXPECT(jsonObject(c, "input").contains("rateHz"));
-            EXPECT(jsonObject(jsonObject(c, "output"), "rumble").contains("count"));
-            EXPECT(jsonObject(jsonObject(c, "output"), "micLed").contains("last"));
-        }
-
-        TEST("GET /api/diagnostics: a device met but not paired or connected has an alias");
-        g_seenDevices.note("dish-canary-gone", "CANARY-STRANGER-2");
-        const std::string canaryKey(64, 'c');
-        g_configStore->update([&canaryKey](Config& cfg) {
-            PairedDevice d;
-            d.id = "dish-canary-keyed";
-            d.name = "CANARY-KEYED";
-            d.sharedKeyHex = canaryKey;
-            cfg.pairedDevices.push_back(d);
-            return true;
-        });
-        logMsg(LogLevel::INFO, "pairing", "Pairing request from CANARY-STRANGER-2 (10.0.0.9)");
-        logMsg(LogLevel::INFO, "pairing", "Key check: " + canaryKey);
-        logMsg(LogLevel::INFO, "client", "UDP endpoint now [2001:db8::77]:47998");
-        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto canary = cli.Get("/api/diagnostics");
-        EXPECT(canary && canary->status == 200);
-        if (canary) {
-            EXPECT(canary->body.find("CANARY-STRANGER-2") == std::string::npos);
-            EXPECT(canary->body.find("Pairing request from Host ") != std::string::npos);
-
-            TEST("GET /api/diagnostics: a pairing key in log text is redacted");
-            EXPECT(canary->body.find(canaryKey) == std::string::npos);
-            EXPECT(canary->body.find("Key check: [redacted]") != std::string::npos);
-
-            TEST("GET /api/diagnostics: an IPv6 address in log text is masked");
-            EXPECT(canary->body.find("2001:db8::77") == std::string::npos);
+            TEST("a controller its host disabled reads disabled, and stays in its session");
+            gamepad.disabled.store(true);
+            auto off = cli.Get("/api/connections");
+            EXPECT(off && off->status == 200);
+            if (off) {
+                Json j = parseJson(off->body);
+                const bool one =
+                    j["connections"].size() == 1 && j["connections"][0]["controllers"].size() == 1;
+                EXPECT(one);
+                if (one) {
+                    EXPECT_EQ(jsonStr(j["connections"][0]["controllers"][0], "state"),
+                              std::string("disabled"));
+                }
+                EXPECT_EQ(jsonInt(j, "totalControllers"), 1L);
+            }
+            gamepad.disabled.store(false);
 
             TEST(
-                "GET /api/diagnostics: each log line's level is lowercase, as /api/logs writes it");
-            const Json j = parseJson(canary->body);
-            EXPECT(!j["log"].empty());
-            for (const Json& line : j["log"]) {
-                const std::string level = jsonStr(line, "level");
-                EXPECT(level == "info" || level == "warn" || level == "error");
+                "a controller whose XInput device alone its host disabled reads live and names it");
+            gamepad.xinputDisabled.store(true);
+            auto partly = cli.Get("/api/connections");
+            EXPECT(partly && partly->status == 200);
+            if (partly) {
+                Json c = parseJson(partly->body)["connections"][0]["controllers"][0];
+                EXPECT_EQ(jsonStr(c, "state"), std::string("live"));
+                EXPECT(c["disabledInWindows"] == Json::array({"xinput"}));
+            }
+            gamepad.xinputDisabled.store(false);
+
+            TEST("a controller its backend refused reads failed, not a stale disabled");
+            gamepad.refused.store(true);
+            gamepad.disabled.store(true);
+            auto refused = cli.Get("/api/connections");
+            EXPECT(refused && refused->status == 200);
+            if (refused) {
+                Json c = parseJson(refused->body)["connections"][0]["controllers"][0];
+                EXPECT_EQ(jsonStr(c, "state"), std::string("failed"));
+            }
+            gamepad.refused.store(false);
+            gamepad.disabled.store(false);
+        }
+        {
+            TEST("admin kick: DELETE /api/connections/:id closes WITH close-notify");
+            int notifiesBefore = clientPort.closeNotifies;
+            auto res = cli.Delete("/api/connections/" + connId);
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonInt(j, "controllersRemoved"), 1L);
+            }
+            EXPECT_EQ(clientPort.closeNotifies, notifiesBefore + 1);
+
+            TEST("kick of an unknown connection: 404");
+            auto gone = cli.Delete("/api/connections/conn_ffffffff");
+            EXPECT(gone && gone->status == 404);
+        }
+
+        // ---- log ring ---------------------------------------------------------------------
+        {
+            TEST("GET /api/logs: monotonic seq + a just-written marker entry");
+            logMsg(LogLevel::INFO, "route-test", "marker-entry-xyzzy");
+            EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+            auto res = cli.Get("/api/logs");
+            EXPECT(res && res->status == 200);
+            uint64_t seq = 0;
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.contains("entries") && j["entries"].is_array());
+                seq = static_cast<uint64_t>(jsonInt(j, "seq"));
+                EXPECT(seq > 0);
+                EXPECT(res->body.find("marker-entry-xyzzy") != std::string::npos);
+            }
+
+            TEST("GET /api/logs?since=<head>: nothing new");
+            auto res2 = cli.Get("/api/logs?since=" + std::to_string(seq));
+            EXPECT(res2 && res2->status == 200);
+            if (res2) {
+                Json j = parseJson(res2->body);
+                EXPECT(j.contains("entries") && j["entries"].is_array() && j["entries"].empty());
+            }
+
+            // The viewer sends back the `seq` it was given, so the entry written right after
+            // that reply has to be the first one in the next. It used to be skipped.
+            TEST("GET /api/logs?since=<seq>: the entry written after that seq is the first back");
+            logMsg(LogLevel::INFO, "route-test", "marker-after-seq");
+            EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+            auto res3 = cli.Get("/api/logs?since=" + std::to_string(seq));
+            EXPECT(res3 && res3->status == 200);
+            if (res3) {
+                Json j = parseJson(res3->body);
+                const bool haveEntries =
+                    j.contains("entries") && j["entries"].is_array() && !j["entries"].empty();
+                EXPECT(haveEntries);
+                if (haveEntries) {
+                    EXPECT(static_cast<uint64_t>(jsonInt(j["entries"][0], "seq")) == seq);
+                    EXPECT(res3->body.find("marker-after-seq") != std::string::npos);
+                }
             }
         }
 
-        svc.closeSessionById(session.connectionId, "", CLOSE_REASON_KICKED, false);
-        g_controllerDbService = nullptr;
-    }
+        // ---- controller database, Test button, diagnostics ---------------------------
+        {
+            TEST("GET /api/controller-db/status: 503 before the database is loaded");
+            auto res = cli.Get("/api/controller-db/status");
+            EXPECT(res && res->status == 503);
+        }
+        {
+            ControllerDbAdapter dbAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path,
+                                          nullptr, atomicWriteFile);
+            satellite::ControllerDbService controllerDb(dbAdapter, log, *g_configStore);
+            EXPECT(controllerDb.load());
+            g_controllerDbService = &controllerDb;
 
-    // ---- SSE endpoint presence -----------------------------------------------------
-    {
-        TEST("GET /api/events: one multiplexed tick with every event stream");
-        std::string sse;
-        cli.Get("/api/events", [&sse](const char* data, size_t len) {
-            sse.append(data, len);
-            // Stop as soon as the last event of the first tick arrived.
-            return sse.find("event: pairRequests") == std::string::npos;
-        });
-        EXPECT(sse.rfind("event: status\ndata: ", 0) == 0);
-        EXPECT(sse.find("event: connections\ndata: ") != std::string::npos);
-        EXPECT(sse.find("event: devices\ndata: ") != std::string::npos);
-        EXPECT(sse.find("event: pin\ndata: ") != std::string::npos);
-        EXPECT(sse.find("event: pairRequests\ndata: ") != std::string::npos);
-        EXPECT(sse.find("event: update\ndata: ") == std::string::npos); // no updater wired
-    }
+            TEST("GET /api/controller-db/status: the bundled copy, never checked");
+            auto res = cli.Get("/api/controller-db/status");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                const Json j = parseJson(res->body);
+                EXPECT_EQ(jsonInt(j, "bundledVersion"), 1L);
+                EXPECT_EQ(jsonInt(j, "activeVersion"), 1L);
+                EXPECT_EQ(jsonStr(j, "source"), std::string("bundled"));
+                EXPECT(j.contains("lastCheckAt") && j["lastCheckAt"].is_null());
+                EXPECT(jsonBool(j, "enabled"));
+            }
 
-    server.stop();
-    serverThread.join();
-    logWriter().stop();
-    g_configStore.reset();
-    home.cleanup();
+            TEST("POST /api/controller-db/check: answers with the status at once");
+            auto check = cli.Post("/api/controller-db/check", "", "application/json");
+            EXPECT(check && check->status == 200);
 
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+            // A live worker over a GET that counts, so "nothing leaves the PC" is
+            // observed rather than inferred.
+            std::atomic<int> gets{0};
+            const DbHttpGet countingGet = [&gets](const std::string&, const std::string&) {
+                gets++;
+                return DbFetchResponse{};
+            };
+            ControllerDbAdapter liveAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path,
+                                            countingGet, atomicWriteFile);
+            satellite::ControllerDbService live(liveAdapter, log, *g_configStore);
+            live.load();
+            g_controllerDbService = &live;
+            live.start();
+            const auto checkSettles = [&cli](const std::string& want) {
+                for (int i = 0; i < 200; i++) {
+                    auto r = cli.Get("/api/controller-db/status");
+                    if (r && jsonStr(parseJson(r->body), "lastCheckResult") == want) return true;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                return false;
+            };
+
+            TEST(
+                "POST /api/controller-db/check with the switch off: no request leaves, result off");
+            auto off =
+                cli.Post("/api/config", R"({"controllerDbUpdates":false})", "application/json");
+            EXPECT(off && off->status == 200);
+            auto offCheck = cli.Post("/api/controller-db/check", "", "application/json");
+            EXPECT(offCheck && offCheck->status == 200);
+            if (offCheck) EXPECT(!jsonBool(parseJson(offCheck->body), "enabled", true));
+            EXPECT(checkSettles("off"));
+            EXPECT_EQ(gets.load(), 0);
+
+            TEST("POST /api/controller-db/check with the switch on: one manifest request");
+            auto on =
+                cli.Post("/api/config", R"({"controllerDbUpdates":true})", "application/json");
+            EXPECT(on && on->status == 200);
+            cli.Post("/api/controller-db/check", "", "application/json");
+            EXPECT(checkSettles("offline"));
+            EXPECT_EQ(gets.load(), 1);
+            live.stop();
+            g_controllerDbService = &controllerDb;
+
+            const uint8_t key[CRYPTO_KEY_SIZE] = {7};
+            ControllerDescriptor pad;
+            pad.ctrlIdx = 0;
+            pad.type = CONTROLLER_TYPE_DUALSENSE;
+            pad.caps = CAP_RUMBLE | CAP_LIGHTBAR;
+            const auto session = svc.upsertSession("dish-route-diag", "Route Pixel", "192.168.77.5",
+                                                   key, {pad}, false);
+            const std::string base = "/api/connections/" + session.connectionId + "/controllers/";
+
+            TEST("POST .../controllers/:idx/test: the claimed lanes are sent, the rest skipped");
+            auto test = cli.Post(base + "0/test", R"({"lanes":["rumble","lightbar","playerLeds"]})",
+                                 "application/json");
+            EXPECT(test && test->status == 200);
+            if (test) {
+                const Json j = parseJson(test->body);
+                EXPECT_EQ(j["sent"].dump(), std::string(R"(["rumble","lightbar"])"));
+                EXPECT_EQ(j["skipped"].dump(), std::string(R"(["playerLeds"])"));
+            }
+            EXPECT_EQ(clientPort.rumbles.load(), 1);
+            EXPECT_EQ(clientPort.lightbars.load(), 1);
+
+            TEST("POST .../test: an unknown lane is a 400, an empty slot or session a 404");
+            auto badLane =
+                cli.Post(base + "0/test", R"({"lanes":["speaker"]})", "application/json");
+            EXPECT(badLane && badLane->status == 400);
+            auto noLanes = cli.Post(base + "0/test", "{}", "application/json");
+            EXPECT(noLanes && noLanes->status == 400);
+
+            TEST("POST .../test: naming micLed is a 400 that names it, and sends nothing");
+            const int rumblesBefore = clientPort.rumbles.load();
+            auto micLed =
+                cli.Post(base + "0/test", R"({"lanes":["rumble","micLed"]})", "application/json");
+            EXPECT(micLed && micLed->status == 400);
+            if (micLed) EXPECT(micLed->body.find("micLed") != std::string::npos);
+            EXPECT_EQ(clientPort.rumbles.load(), rumblesBefore);
+            EXPECT_EQ(clientPort.micLeds.load(), 0);
+            auto emptySlot =
+                cli.Post(base + "5/test", R"({"lanes":["rumble"]})", "application/json");
+            EXPECT(emptySlot && emptySlot->status == 404);
+            auto noSession = cli.Post("/api/connections/conn_nothere/controllers/0/test",
+                                      R"({"lanes":["rumble"]})", "application/json");
+            EXPECT(noSession && noSession->status == 404);
+
+            TEST("GET /api/connections: each controller carries its caps and lastGameOutput");
+            auto conns = cli.Get("/api/connections");
+            EXPECT(conns && conns->status == 200);
+            if (conns) {
+                const Json j = parseJson(conns->body);
+                const Json& c = j["connections"][0]["controllers"][0];
+                EXPECT(jsonBool(jsonObject(c, "caps"), "rumble"));
+                EXPECT(!jsonBool(jsonObject(c, "caps"), "mic"));
+                EXPECT(c.contains("lastGameOutput") && c["lastGameOutput"].is_null());
+            }
+
+            TEST("GET /api/diagnostics: the satellite bundle, with the client as Host 1");
+            logMsg(LogLevel::INFO, "client",
+                   "Session from Route Pixel (dish-route-diag) at 192.168.77.5");
+            char host[256] = {};
+            gethostname(host, sizeof(host) - 1);
+            const std::string hostName(host);
+            logMsg(LogLevel::INFO, "mdns", "Announcing " + hostName + "._satellite._udp.local.");
+            EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+            auto diag = cli.Get("/api/diagnostics");
+            EXPECT(diag && diag->status == 200);
+            if (diag) {
+                const Json j = parseJson(diag->body);
+                EXPECT_EQ(jsonInt(j, "bundle"), 1L);
+                EXPECT_EQ(jsonStr(jsonObject(j, "app"), "name"), std::string("satellite"));
+                EXPECT_EQ(jsonStr(j["hosts"][0], "alias"), std::string("Host 1"));
+                EXPECT_EQ(jsonStr(j["controllers"][0], "type"), std::string("dualsense"));
+                EXPECT(jsonBool(jsonObject(j["controllers"][0], "caps"), "lightbar"));
+                EXPECT(diag->body.find("Session from Host 1 (Host 1) at Host 1") !=
+                       std::string::npos);
+                EXPECT_EQ(jsonInt(jsonObject(j, "controllerDb"), "bundledVersion"), 1L);
+                EXPECT(j.contains("debug") && j.contains("backends") && j.contains("log"));
+
+                TEST("GET /api/diagnostics: no client id, name or address anywhere in the file");
+                EXPECT(diag->body.find("dish-route-diag") == std::string::npos);
+                EXPECT(diag->body.find("Route Pixel") == std::string::npos);
+                EXPECT(diag->body.find("192.168.77.5") == std::string::npos);
+
+                TEST("GET /api/diagnostics: the machine's name is \"this PC\" in the log");
+                EXPECT(diag->body.find("Announcing this PC._satellite._udp.local.") !=
+                       std::string::npos);
+                if (hostName.size() >= 6) EXPECT(diag->body.find(hostName) == std::string::npos);
+
+                TEST("GET /api/diagnostics: each virtual controller carries its input and output");
+                const Json& c = j["controllers"][0];
+                EXPECT(jsonObject(c, "input").contains("frames"));
+                EXPECT(jsonObject(c, "input").contains("rateHz"));
+                EXPECT(jsonObject(jsonObject(c, "output"), "rumble").contains("count"));
+                EXPECT(jsonObject(jsonObject(c, "output"), "micLed").contains("last"));
+            }
+
+            TEST("GET /api/diagnostics: a device met but not paired or connected has an alias");
+            g_seenDevices.note("dish-canary-gone", "CANARY-STRANGER-2");
+            const std::string canaryKey(64, 'c');
+            g_configStore->update([&canaryKey](Config& cfg) {
+                PairedDevice d;
+                d.id = "dish-canary-keyed";
+                d.name = "CANARY-KEYED";
+                d.sharedKeyHex = canaryKey;
+                cfg.pairedDevices.push_back(d);
+                return true;
+            });
+            logMsg(LogLevel::INFO, "pairing", "Pairing request from CANARY-STRANGER-2 (10.0.0.9)");
+            logMsg(LogLevel::INFO, "pairing", "Key check: " + canaryKey);
+            logMsg(LogLevel::INFO, "client", "UDP endpoint now [2001:db8::77]:47998");
+            EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+            auto canary = cli.Get("/api/diagnostics");
+            EXPECT(canary && canary->status == 200);
+            if (canary) {
+                EXPECT(canary->body.find("CANARY-STRANGER-2") == std::string::npos);
+                EXPECT(canary->body.find("Pairing request from Host ") != std::string::npos);
+
+                TEST("GET /api/diagnostics: a pairing key in log text is redacted");
+                EXPECT(canary->body.find(canaryKey) == std::string::npos);
+                EXPECT(canary->body.find("Key check: [redacted]") != std::string::npos);
+
+                TEST("GET /api/diagnostics: an IPv6 address in log text is masked");
+                EXPECT(canary->body.find("2001:db8::77") == std::string::npos);
+
+                TEST("GET /api/diagnostics: each log line's level is lowercase, as /api/logs "
+                     "writes it");
+                const Json j = parseJson(canary->body);
+                EXPECT(!j["log"].empty());
+                for (const Json& line : j["log"]) {
+                    const std::string level = jsonStr(line, "level");
+                    EXPECT(level == "info" || level == "warn" || level == "error");
+                }
+            }
+
+            svc.closeSessionById(session.connectionId, "", CLOSE_REASON_KICKED, false);
+            g_controllerDbService = nullptr;
+        }
+
+        // ---- SSE endpoint presence -----------------------------------------------------
+        {
+            TEST("GET /api/events: one multiplexed tick with every event stream");
+            std::string sse;
+            cli.Get("/api/events", [&sse](const char* data, size_t len) {
+                sse.append(data, len);
+                // Stop as soon as the last event of the first tick arrived.
+                return sse.find("event: pairRequests") == std::string::npos;
+            });
+            EXPECT(sse.rfind("event: status\ndata: ", 0) == 0);
+            EXPECT(sse.find("event: connections\ndata: ") != std::string::npos);
+            EXPECT(sse.find("event: devices\ndata: ") != std::string::npos);
+            EXPECT(sse.find("event: pin\ndata: ") != std::string::npos);
+            EXPECT(sse.find("event: pairRequests\ndata: ") != std::string::npos);
+            EXPECT(sse.find("event: update\ndata: ") == std::string::npos); // no updater wired
+        }
+
+        server.stop();
+        serverThread.join();
+        logWriter().stop();
+        g_configStore.reset();
+        home.cleanup();
+        return 0;
+    });
 }

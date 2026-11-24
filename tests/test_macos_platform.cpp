@@ -36,6 +36,7 @@
 // nobody hears about.
 struct TempHome {
     std::string path;
+    std::filesystem::path dir;
     std::string savedHome;
     bool hadHome = false;
     TempHome() {
@@ -45,15 +46,11 @@ struct TempHome {
         char tmpl[] = "/tmp/satellite-test-XXXXXX";
         char* d = mkdtemp(tmpl);
         path = (d != nullptr) ? d : "";
+        dir = path;
         setenv("HOME", path.c_str(), 1);
     }
     ~TempHome() {
-        if (!path.empty()) {
-            std::error_code ec;
-            std::filesystem::remove_all(path, ec);
-            EXPECT(!ec);
-            if (ec) std::cerr << "  remove_all(" << path << "): " << ec.message() << "\n";
-        }
+        if (!path.empty()) satellite::test::removeTestDir(dir);
         if (hadHome) {
             setenv("HOME", savedHome.c_str(), 1);
         } else {
@@ -620,39 +617,36 @@ static void testPinBurnsAfterMaxFails() {
 }
 
 int main() {
-    std::cout << "Running macOS platform tests...\n\n";
+    return satellite::test::runMain("test_macos_platform", []() -> int {
+        std::cout << "Running macOS platform tests...\n\n";
 
-    if (!sodiumInit()) {
-        std::cerr << "sodium init failed\n";
-        return 1;
-    }
+        if (!sodiumInit()) {
+            std::cerr << "sodium init failed\n";
+            return 1;
+        }
 
-    testConfigEscapingRoundTrip();
-    testConfigPath();
-    testConfigDirOverride();
-    testAtomicWriteFile();
-    testConfigRoundTrip();
-    testDiscoveryBroadcastConfig();
-    testLoadConfigMissingFile();
-    testAutoStartEnable();
-    testAutoStartDisable();
-    testAutoStartIdempotent();
-    testGetExeDir();
-    testGetCurrentDate();
-    testFileLoggerFlush();
-    testHexCodec();
-    testDpapiKeystore();
-    testRandomHelpers();
-    testPinSnapshotInitial();
-    testPinRotationKeepsPrevious();
-    testPinStaleRotationDropsPrevious();
-    testVerifyPinConsumesAndFlashes();
-    testPinRejectsWrongGuesses();
-    testPinBurnsAfterMaxFails();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testConfigEscapingRoundTrip();
+        testConfigPath();
+        testConfigDirOverride();
+        testAtomicWriteFile();
+        testConfigRoundTrip();
+        testDiscoveryBroadcastConfig();
+        testLoadConfigMissingFile();
+        testAutoStartEnable();
+        testAutoStartDisable();
+        testAutoStartIdempotent();
+        testGetExeDir();
+        testGetCurrentDate();
+        testFileLoggerFlush();
+        testHexCodec();
+        testDpapiKeystore();
+        testRandomHelpers();
+        testPinSnapshotInitial();
+        testPinRotationKeepsPrevious();
+        testPinStaleRotationDropsPrevious();
+        testVerifyPinConsumesAndFlashes();
+        testPinRejectsWrongGuesses();
+        testPinBurnsAfterMaxFails();
+        return 0;
+    });
 }

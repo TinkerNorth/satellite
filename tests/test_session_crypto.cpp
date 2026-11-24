@@ -202,22 +202,19 @@ static void testFirstPacketCounterOrigin() {
 }
 
 int main() {
-    std::cout << "Running portable session-crypto interop tests...\n\n";
+    return satellite::test::runMain("test_session_crypto", []() -> int {
+        std::cout << "Running portable session-crypto interop tests...\n\n";
 
-    if (sodium_init() < 0) {
-        std::cerr << "sodium init failed\n";
-        return 1;
-    }
+        if (sodium_init() < 0) {
+            std::cerr << "sodium init failed\n";
+            return 1;
+        }
 
-    testSessionKeyDerivation();
-    testHmacProof();
-    testPacketAeadDirections();
-    testPacketAeadTampering();
-    testFirstPacketCounterOrigin();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testSessionKeyDerivation();
+        testHmacProof();
+        testPacketAeadDirections();
+        testPacketAeadTampering();
+        testFirstPacketCounterOrigin();
+        return 0;
+    });
 }

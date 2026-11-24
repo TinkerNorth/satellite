@@ -88,17 +88,16 @@ void test_hexEncodeBE32_matchesPrintfForWholeValues() {
 } // namespace
 
 int main() {
-    std::cout << "Running hex encoder tests...\n\n";
-    test_hexEncode_isLowercaseHighNibbleFirst();
-    test_hexEncode_ofNothingIsEmpty();
-    test_hexEncode_matchesPrintfForEveryByte();
-    test_hexEncodeSeparated_separatesBytesButNotTheEnds();
-    test_hexEncodeSeparated_ofOneByteHasNoSeparator();
-    test_hexEncodeSeparated_ofNothingIsEmpty();
-    test_hexEncodeBE32_isEightDigitsMostSignificantFirst();
-    test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition();
-    test_hexEncodeBE32_matchesPrintfForWholeValues();
-
-    std::cout << "test_hex: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_hex", [] {
+        std::cout << "Running hex encoder tests...\n\n";
+        test_hexEncode_isLowercaseHighNibbleFirst();
+        test_hexEncode_ofNothingIsEmpty();
+        test_hexEncode_matchesPrintfForEveryByte();
+        test_hexEncodeSeparated_separatesBytesButNotTheEnds();
+        test_hexEncodeSeparated_ofOneByteHasNoSeparator();
+        test_hexEncodeSeparated_ofNothingIsEmpty();
+        test_hexEncodeBE32_isEightDigitsMostSignificantFirst();
+        test_hexEncodeBE32_matchesPrintfForEveryDigitInEveryPosition();
+        test_hexEncodeBE32_matchesPrintfForWholeValues();
+    });
 }

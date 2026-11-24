@@ -710,33 +710,32 @@ static void test_localizedCatalogsRenderLocalizedNames() {
 }
 
 int main() {
-    test_resolveLocale_exactMatch();
-    test_resolveLocale_primarySubtag();
-    test_resolveLocale_qValueOrdering();
-    test_resolveLocale_fallbackEn();
-    test_catalogETag_shape();
-    test_emulatesUsb_fromRecords();
-    test_catalogJson_structure();
-    test_catalogJson_inertBackend();
-    test_hostBlock_liveBackend();
-    test_hostBlock_supportedButDown();
-    test_hostBlock_inertBackend();
-    test_catalogString_fallbackChain();
-    test_resolveLocale_malformedHeaders();
-    test_catalogJson_escapesLocalizedStrings();
-    test_imageSlugs_matchCatalogIds();
-    test_artworkCompletenessGate();
-    test_emulatesNotLocalized();
-    test_audioFeatureSlugsNotLocalized();
-    test_emulatesOnlyOnOfferedTypes();
-    test_catalogJson_goldenShape_uinput();
-    test_extendedButtons_listsTheSlugsATypeRenders();
-    test_dualSenseEdgeIsNeverTheDefault();
-    test_stringKeysCoverEveryType();
-    test_catalogVersion_present();
-    test_localeCompletenessGate();
-    test_localizedCatalogsRenderLocalizedNames();
-
-    std::cout << "catalog: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("catalog", [] {
+        test_resolveLocale_exactMatch();
+        test_resolveLocale_primarySubtag();
+        test_resolveLocale_qValueOrdering();
+        test_resolveLocale_fallbackEn();
+        test_catalogETag_shape();
+        test_emulatesUsb_fromRecords();
+        test_catalogJson_structure();
+        test_catalogJson_inertBackend();
+        test_hostBlock_liveBackend();
+        test_hostBlock_supportedButDown();
+        test_hostBlock_inertBackend();
+        test_catalogString_fallbackChain();
+        test_resolveLocale_malformedHeaders();
+        test_catalogJson_escapesLocalizedStrings();
+        test_imageSlugs_matchCatalogIds();
+        test_artworkCompletenessGate();
+        test_emulatesNotLocalized();
+        test_audioFeatureSlugsNotLocalized();
+        test_emulatesOnlyOnOfferedTypes();
+        test_catalogJson_goldenShape_uinput();
+        test_extendedButtons_listsTheSlugsATypeRenders();
+        test_dualSenseEdgeIsNeverTheDefault();
+        test_stringKeysCoverEveryType();
+        test_catalogVersion_present();
+        test_localeCompletenessGate();
+        test_localizedCatalogsRenderLocalizedNames();
+    });
 }

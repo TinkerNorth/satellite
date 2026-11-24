@@ -107,16 +107,15 @@ static void test_inactive_without_sdk() {
 }
 
 int main() {
-    test_no_dsn_never_arms();
-    test_opt_out_never_arms();
-    test_arms_when_both_hold();
-    test_env_override_is_the_dev_hatch();
-    test_test_build_carries_no_dsn();
-    test_default_is_on();
-    test_absent_key_reads_as_on();
-    test_round_trip();
-    test_inactive_without_sdk();
-
-    std::cout << "crash_reporting: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("crash_reporting", [] {
+        test_no_dsn_never_arms();
+        test_opt_out_never_arms();
+        test_arms_when_both_hold();
+        test_env_override_is_the_dev_hatch();
+        test_test_build_carries_no_dsn();
+        test_default_is_on();
+        test_absent_key_reads_as_on();
+        test_round_trip();
+        test_inactive_without_sdk();
+    });
 }

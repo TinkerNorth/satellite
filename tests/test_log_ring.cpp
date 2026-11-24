@@ -184,10 +184,9 @@ void testRace() {
 } // namespace
 
 int main() {
-    testSlotsSince();
-    testJson();
-    testRace();
-
-    std::cout << "test_log_ring: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("test_log_ring", [] {
+        testSlotsSince();
+        testJson();
+        testRace();
+    });
 }

@@ -133,12 +133,11 @@ static void test_lane_magnitude_bounds() {
 }
 
 int main() {
-    test_full_scale_sine_reads_full_magnitude();
-    test_scale_is_linear_in_amplitude();
-    test_lanes_map_to_motors_and_stay_independent();
-    test_silence_and_floor();
-    test_lane_magnitude_bounds();
-
-    std::cout << "haptic_envelope: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("haptic_envelope", [] {
+        test_full_scale_sine_reads_full_magnitude();
+        test_scale_is_linear_in_amplitude();
+        test_lanes_map_to_motors_and_stay_independent();
+        test_silence_and_floor();
+        test_lane_magnitude_bounds();
+    });
 }

@@ -257,28 +257,21 @@ void testStoppingTheServerEndsTheOpenStreams() {
 } // namespace
 
 int main() {
+    return satellite::test::runMain("test_event_stream", []() -> int {
 #ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::cerr << "WSAStartup failed\n";
-        return 1;
-    }
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            std::cerr << "WSAStartup failed\n";
+            return 1;
+        }
 #endif
-    testAStreamIsServedAsAnEventStream();
-    testEveryStreamSharesTheBuilds();
-    testTheNinthStreamIsRefusedUntilOneLeaves();
-    testStoppingTheServerEndsTheOpenStreams();
+        testAStreamIsServedAsAnEventStream();
+        testEveryStreamSharesTheBuilds();
+        testTheNinthStreamIsRefusedUntilOneLeaves();
+        testStoppingTheServerEndsTheOpenStreams();
 #ifdef _WIN32
-    WSACleanup();
+        WSACleanup();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        return 0;
+    });
 }

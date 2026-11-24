@@ -22,16 +22,8 @@ static void test_anything_else_is_no_package() {
 }
 
 int main() {
-    test_the_two_native_formats_are_named();
-    test_anything_else_is_no_package();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_package_format", [] {
+        test_the_two_native_formats_are_named();
+        test_anything_else_is_no_package();
+    });
 }

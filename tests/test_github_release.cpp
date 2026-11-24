@@ -106,22 +106,14 @@ static void test_lookup_sha256() {
 }
 
 int main() {
-    std::cout << "Running github_release tests...\n\n";
-    test_parse_full_release();
-    test_parse_null_optional_fields();
-    test_parse_malformed_returns_false();
-    test_parse_list();
-    test_strip_tag_prefix();
-    test_iso_to_epoch();
-    test_lookup_sha256();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_github_release", [] {
+        std::cout << "Running github_release tests...\n\n";
+        test_parse_full_release();
+        test_parse_null_optional_fields();
+        test_parse_malformed_returns_false();
+        test_parse_list();
+        test_strip_tag_prefix();
+        test_iso_to_epoch();
+        test_lookup_sha256();
+    });
 }

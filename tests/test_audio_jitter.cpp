@@ -352,30 +352,22 @@ void test_reset_startsAFreshStream() {
 } // namespace
 
 int main() {
-    std::cout << "Running audio jitter-window tests...\n\n";
-    test_inOrder_passesThrough();
-    test_firstPacketPrimes_anySeq();
-    test_singleReorder_heals();
-    test_lostFrame_becomesGapWithFecCarrier();
-    test_twoLostFrames_concealThenRecover();
-    test_lateFrame_isDropped();
-    test_duplicateOfHeldFrame_isDropped();
-    test_malformedPackets_rejected();
-    test_wrap_inOrderAcrossZero();
-    test_wrap_reorderAndGapAcrossZero();
-    test_longDropout_concealsThenResyncs();
-    test_concealRunResetsAfterGoodFrame();
-    test_windowNeverHoldsMoreThanOneFrame();
-    test_eventsNeverOverrunTheResultArray();
-    test_reset_startsAFreshStream();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_audio_jitter", [] {
+        std::cout << "Running audio jitter-window tests...\n\n";
+        test_inOrder_passesThrough();
+        test_firstPacketPrimes_anySeq();
+        test_singleReorder_heals();
+        test_lostFrame_becomesGapWithFecCarrier();
+        test_twoLostFrames_concealThenRecover();
+        test_lateFrame_isDropped();
+        test_duplicateOfHeldFrame_isDropped();
+        test_malformedPackets_rejected();
+        test_wrap_inOrderAcrossZero();
+        test_wrap_reorderAndGapAcrossZero();
+        test_longDropout_concealsThenResyncs();
+        test_concealRunResetsAfterGoodFrame();
+        test_windowNeverHoldsMoreThanOneFrame();
+        test_eventsNeverOverrunTheResultArray();
+        test_reset_startsAFreshStream();
+    });
 }

@@ -55,10 +55,12 @@ using satellite::jsonStr;
 // saveConfig() calls land in the sandbox.
 struct TempHome {
     std::string path;
+    std::filesystem::path dir;
     TempHome() {
         char tmpl[] = "/tmp/satellite-routes-XXXXXX";
         char* d = mkdtemp(tmpl);
         path = (d != nullptr) ? d : "/tmp";
+        dir = path;
         setenv("HOME", path.c_str(), 1);
         setenv("XDG_CONFIG_HOME", path.c_str(), 1);
     }
@@ -67,10 +69,7 @@ struct TempHome {
     // destructor only covers the early-exit paths.
     void cleanup() {
         if (path.rfind("/tmp/satellite-routes-", 0) != 0) return;
-        std::error_code ec;
-        std::filesystem::remove_all(path, ec);
-        EXPECT(!ec);
-        if (ec) std::cerr << "  remove_all(" << path << "): " << ec.message() << "\n";
+        satellite::test::removeTestDir(dir);
         path.clear();
     }
     ~TempHome() { cleanup(); }
@@ -172,907 +171,911 @@ static std::string wrongPinFor(const PinSnapshot& s) {
 }
 
 int main() {
-    std::cout << "Running client API route tests...\n\n";
+    return satellite::test::runMain("test_routes_client", []() -> int {
+        std::cout << "Running client API route tests...\n\n";
 
-    if (!sodiumInit()) {
-        std::cerr << "sodium init failed\n";
-        return 1;
-    }
-
-    TempHome home;
-    g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
-    g_appRunning = true;
-    logWriter().start(std::make_unique<DiscardingLogSink>());
-
-    StubGamepad gamepad;
-    StubClient clientPort;
-    StubLog log;
-    SessionService svc(gamepad, clientPort, log, deriveSessionKey);
-
-    httplib::Server server;
-    registerClientRoutes(server, svc);
-    int port = server.bind_to_any_port("127.0.0.1");
-    if (port <= 0) {
-        std::cerr << "failed to bind loopback port\n";
-        return 1;
-    }
-    std::thread serverThread([&server] { server.listen_after_bind(); });
-    server.wait_until_ready();
-
-    httplib::Client cli("127.0.0.1", port);
-    cli.set_connection_timeout(5);
-    cli.set_read_timeout(5);
-
-    // Paired identity used throughout.
-    const std::string devId = "dev-routes-1";
-    uint8_t pairingKey[CRYPTO_KEY_SIZE];
-    for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
-        pairingKey[i] = bits::lowByte(0xA0U ^ static_cast<uint32_t>(i));
-    }
-    putPairedDevice(devId, hexEncode(pairingKey, CRYPTO_KEY_SIZE));
-    const std::string proof = computeHmacProof(pairingKey, devId);
-    const httplib::Headers auth = {{"X-Device-Id", devId}, {"X-Hmac-Proof", proof}};
-
-    // ---- clientAuthed: terminal-401 machine codes --------------------------
-    {
-        TEST("PUT /api/connections with no credentials: 401 NOT_PAIRED");
-        auto res = cli.Put("/api/connections", "{}", "application/json");
-        EXPECT(res && res->status == 401);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonStr(j, "error"), std::string("unauthorized"));
-            EXPECT_EQ(jsonStr(j, "code"), std::string("NOT_PAIRED"));
-        }
-    }
-    {
-        TEST("unknown deviceId: 401 NOT_PAIRED (never BAD_PROOF for strangers)");
-        httplib::Headers h = {{"X-Device-Id", "dev-unknown"}, {"X-Hmac-Proof", proof}};
-        auto res = cli.Put("/api/connections", h, "{}", "application/json");
-        EXPECT(res && res->status == 401);
-        if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "code"), std::string("NOT_PAIRED"));
-    }
-    {
-        TEST("known device, malformed proof: 401 BAD_PROOF");
-        httplib::Headers h = {{"X-Device-Id", devId}, {"X-Hmac-Proof", "zz-not-hex"}};
-        auto res = cli.Put("/api/connections", h, "{}", "application/json");
-        EXPECT(res && res->status == 401);
-        if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "code"), std::string("BAD_PROOF"));
-    }
-    {
-        TEST("known device, proof of the WRONG key: 401 BAD_PROOF");
-        uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
-        httplib::Headers h = {{"X-Device-Id", devId},
-                              {"X-Hmac-Proof", computeHmacProof(otherKey, devId)}};
-        auto res = cli.Put("/api/connections", h, "{}", "application/json");
-        EXPECT(res && res->status == 401);
-        if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "code"), std::string("BAD_PROOF"));
-    }
-    {
-        TEST("GET /api/connections/:id is authed too: 401 without credentials");
-        auto res = cli.Get("/api/connections/conn_00000000");
-        EXPECT(res && res->status == 401);
-    }
-
-    // ---- protocol-version negotiation ---------------------------------------
-    {
-        TEST("PUT /api/connections with an in-range older version: accepted and echoed");
-        auto res =
-            cli.Put("/api/connections", auth, R"({"protocolVersion":1})", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 1L);
-    }
-    {
-        TEST("absent protocolVersion reads as 1: accepted, session speaks v1");
-        auto res = cli.Put("/api/connections", auth, "{}", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 1L);
-    }
-    {
-        TEST("PUT /api/connections beyond the range: 409 + supported/supportedMin echo");
-        auto res = cli.Put("/api/connections", auth,
-                           std::string(R"({"protocolVersion":)") +
-                               std::to_string(PROTOCOL_VERSION + 1) + "}",
-                           "application/json");
-        EXPECT(res && res->status == 409);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonInt(j, "supported"), static_cast<long>(PROTOCOL_VERSION));
-            EXPECT_EQ(jsonInt(j, "supportedMin"), static_cast<long>(PROTOCOL_VERSION_MIN));
-        }
-    }
-    {
-        TEST("a protocol-4 offer is accepted and the session settles at 4");
-        auto res =
-            cli.Put("/api/connections", auth, R"({"protocolVersion":4})", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 4L);
-    }
-    {
-        TEST("a protocol-3 client keeps working: accepted and settled at 3");
-        auto res =
-            cli.Put("/api/connections", auth, R"({"protocolVersion":3})", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 3L);
-    }
-    {
-        TEST("a protocol-5 offer gets 409 naming [1, 4]");
-        auto res =
-            cli.Put("/api/connections", auth, R"({"protocolVersion":5})", "application/json");
-        EXPECT(res && res->status == 409);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonInt(j, "supported"), 4L);
-            EXPECT_EQ(jsonInt(j, "supportedMin"), 1L);
-        }
-    }
-    {
-        TEST("the current protocolVersion is accepted and echoed");
-        const std::string body =
-            std::string(R"({"protocolVersion":)") + std::to_string(PROTOCOL_VERSION) + "}";
-        auto res = cli.Put("/api/connections", auth, body, "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"),
-                      static_cast<long>(PROTOCOL_VERSION));
-        }
-    }
-
-    // ---- session upsert + reconcile + CRUD ----------------------------------
-    std::string connId;
-    {
-        TEST("authed PUT /api/connections: 200 with token/salt/connectionId");
-        // Offers the newest version so the echo pins it; every other body in
-        // this file speaks a fixed older version on purpose.
-        const std::string body = std::string(R"({
-            "protocolVersion": )") +
-                                 std::to_string(PROTOCOL_VERSION) + R"(,
-            "deviceName": "Route Tester",
-            "controllers": [
-                {"ctrlIdx": 0, "type": 0, "caps": {"rumble": true, "analogTriggers": true}},
-                {"ctrlIdx": 1, "type": 1, "caps": {"motion": true, "lightbar": true},
-                 "touchpadMode": "ds4"}
-            ]
-        })";
-        auto res = cli.Put("/api/connections", auth, body, "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            connId = jsonStr(j, "connectionId");
-            EXPECT_EQ(connId.rfind("conn_", 0), size_t{0});
-            EXPECT(isHex(jsonStr(j, "token"), 8));
-            EXPECT(isHex(jsonStr(j, "sessionSalt"), SESSION_SALT_SIZE * 2));
-            EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
-            EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
-            EXPECT(j.contains("controllers") && j["controllers"].is_array() &&
-                   j["controllers"].size() == 2);
-            if (j.contains("controllers") && j["controllers"].size() == 2) {
-                EXPECT_EQ(jsonStr(j["controllers"][0], "result"), std::string("ok"));
-                EXPECT_EQ(jsonInt(j["controllers"][1], "ctrlIdx"), 1L);
-            }
-            EXPECT(j.contains("hostFeatures"));
-            if (j.contains("hostFeatures")) {
-                EXPECT_EQ(jsonBool(j["hostFeatures"]["mouseControl"], "granted"), false);
-            }
-        }
-    }
-    std::string firstToken;
-    {
-        TEST("re-PUT converges in place: same connectionId, rotated token");
-        auto res1 = cli.Put("/api/connections", auth,
-                            R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
-                            "application/json");
-        EXPECT(res1 && res1->status == 200);
-        if (res1) firstToken = jsonStr(parseJson(res1->body), "token");
-        auto res2 = cli.Put("/api/connections", auth,
-                            R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
-                            "application/json");
-        EXPECT(res2 && res2->status == 200);
-        if (res1 && res2) {
-            Json j2 = parseJson(res2->body);
-            EXPECT_EQ(jsonStr(j2, "connectionId"), connId);
-            EXPECT(jsonStr(j2, "token") != firstToken);
-        }
-    }
-    {
-        TEST("a re-PUT from the same address under the same name publishes no new config");
-        const std::shared_ptr<const Config> settled = g_configStore->current();
-        auto res = cli.Put("/api/connections", auth,
-                           R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
-                           "application/json");
-        EXPECT(res && res->status == 200);
-        EXPECT(g_configStore->current() == settled);
-    }
-    {
-        TEST("a re-PUT under a new name publishes the new name");
-        auto res = cli.Put("/api/connections", auth,
-                           R"({"protocolVersion":2,"deviceName":"Renamed Tester",
-                               "controllers":[{"ctrlIdx":0,"type":0}]})",
-                           "application/json");
-        EXPECT(res && res->status == 200);
-        PairedDevice stored;
-        EXPECT(findPairedDevice(devId, stored));
-        EXPECT_EQ(stored.name, std::string("Renamed Tester"));
-    }
-    {
-        TEST("malformed controllers array (missing type): 400");
-        auto res =
-            cli.Put("/api/connections", auth,
-                    R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0}]})", "application/json");
-        EXPECT(res && res->status == 400);
-    }
-    {
-        TEST("PUT /api/connections with a body that is not a JSON object: 400");
-        auto res = cli.Put("/api/connections", auth, "{\"controllers\":[", "application/json");
-        EXPECT(res && res->status == 400);
-    }
-    {
-        TEST("PUT /api/connections nesting hostFeatures 5000 deep: 400, and the server lives");
-        auto res = cli.Put("/api/connections", auth, hostFeaturesNested(5000), "application/json");
-        EXPECT(res && res->status == 400);
-        auto after = cli.Get("/api/server/capabilities");
-        EXPECT(after && after->status == 200);
-    }
-    {
-        TEST("auth via body keys (deviceId/hmacProof) works without headers");
-        const std::string body = std::string(R"({"protocolVersion":2,"deviceId":")") + devId +
-                                 R"(","hmacProof":")" + proof + R"("})";
-        auto res = cli.Put("/api/connections", body, "application/json");
-        EXPECT(res && res->status == 200);
-    }
-    {
-        TEST("GET /api/connections/:id (reconcile view): applied state echoed");
-        auto res = cli.Put("/api/connections", auth,
-                           R"({"protocolVersion":2,
-                               "controllers":[{"ctrlIdx":3,"type":1,"caps":{"motion":true},
-                               "touchpadMode":"ds4"}]})",
-                           "application/json");
-        EXPECT(res && res->status == 200);
-        auto view = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view && view->status == 200);
-        if (view) {
-            Json j = parseJson(view->body);
-            EXPECT_EQ(jsonStr(j, "connectionId"), connId);
-            EXPECT_EQ(jsonStr(j, "deviceId"), devId);
-            EXPECT(j.contains("controllers") && j["controllers"].is_array() &&
-                   j["controllers"].size() == 1);
-            if (j.contains("controllers") && j["controllers"].size() == 1) {
-                const Json& c = j["controllers"][0];
-                EXPECT_EQ(jsonInt(c, "ctrlIdx"), 3L);
-                EXPECT_EQ(jsonStr(c, "touchpadMode"), std::string("ds4"));
-                EXPECT_EQ(jsonBool(c["caps"], "motion"), true);
-                EXPECT_EQ(jsonBool(c["caps"], "rumble"), false);
-            }
-        }
-    }
-    {
-        TEST("caps roundtrip: triggerEffects/playerLeds parse and echo in the view");
-        auto res = cli.Put("/api/connections", auth,
-                           R"({"protocolVersion":2,
-                               "controllers":[{"ctrlIdx":0,"type":2,
-                               "caps":{"rumble":true,"triggerEffects":true,"playerLeds":true}}]})",
-                           "application/json");
-        EXPECT(res && res->status == 200);
-        auto view = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view && view->status == 200);
-        if (view) {
-            Json j = parseJson(view->body);
-            if (j.contains("controllers") && j["controllers"].is_array() &&
-                j["controllers"].size() == 1) {
-                const Json& c = j["controllers"][0];
-                EXPECT_EQ(jsonBool(c["caps"], "triggerEffects"), true);
-                EXPECT_EQ(jsonBool(c["caps"], "playerLeds"), true);
-                EXPECT_EQ(jsonBool(c["caps"], "lightbar"), false);
-            } else {
-                EXPECT(false);
-            }
-        }
-        // An absent caps object parses to no caps bits, not an error.
-        auto res2 = cli.Put("/api/connections", auth,
-                            R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
-                            "application/json");
-        EXPECT(res2 && res2->status == 200);
-        auto view2 = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view2 && view2->status == 200);
-        if (view2) {
-            Json j = parseJson(view2->body);
-            if (j.contains("controllers") && j["controllers"].is_array() &&
-                j["controllers"].size() == 1) {
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "triggerEffects"), false);
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "playerLeds"), false);
-            }
-        }
-    }
-    {
-        TEST("caps roundtrip: mic/speaker parse and echo independently in the view");
-        // The two audio caps are independent directions (mic = the client
-        // sources audio, speaker = the client accepts it), so a descriptor
-        // asking for one must not grant the other.
-        auto res = cli.Put("/api/connections", auth,
-                           R"({"protocolVersion":2,
-                               "controllers":[{"ctrlIdx":0,"type":2,
-                               "caps":{"mic":true,"speaker":false}}]})",
-                           "application/json");
-        EXPECT(res && res->status == 200);
-        auto view = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view && view->status == 200);
-        if (view) {
-            Json j = parseJson(view->body);
-            if (j.contains("controllers") && j["controllers"].is_array() &&
-                j["controllers"].size() == 1) {
-                const Json& c = j["controllers"][0];
-                EXPECT_EQ(jsonBool(c["caps"], "mic"), true);
-                EXPECT_EQ(jsonBool(c["caps"], "speaker"), false);
-                // Neighbouring bits must not be set by the audio pair.
-                EXPECT_EQ(jsonBool(c["caps"], "triggerEffects"), false);
-                EXPECT_EQ(jsonBool(c["caps"], "playerLeds"), false);
-                EXPECT_EQ(jsonBool(c["caps"], "lightbar"), false);
-                EXPECT_EQ(jsonBool(c["caps"], "hapticAudio"), false);
-            } else {
-                EXPECT(false);
-            }
-        }
-        auto res2 = cli.Put("/api/connections", auth,
-                            R"({"protocolVersion":2,
-                                "controllers":[{"ctrlIdx":0,"type":2,
-                                "caps":{"speaker":true}}]})",
-                            "application/json");
-        EXPECT(res2 && res2->status == 200);
-        auto view2 = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view2 && view2->status == 200);
-        if (view2) {
-            Json j = parseJson(view2->body);
-            if (j.contains("controllers") && j["controllers"].is_array() &&
-                j["controllers"].size() == 1) {
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "mic"), false);
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), true);
-            } else {
-                EXPECT(false);
-            }
+        if (!sodiumInit()) {
+            std::cerr << "sodium init failed\n";
+            return 1;
         }
 
-        TEST("caps roundtrip: the session view echoes the extendedButtons claim");
-        auto res4 = cli.Put("/api/connections", auth,
-                            R"({"protocolVersion":4,
-                                "controllers":[{"ctrlIdx":0,"type":0,
-                                "caps":{"extendedButtons":true}}]})",
-                            "application/json");
-        EXPECT(res4 && res4->status == 200);
-        auto view4 = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view4 && view4->status == 200);
-        if (view4) {
-            Json j = parseJson(view4->body);
-            const bool onePad = j.contains("controllers") && j["controllers"].is_array() &&
-                                j["controllers"].size() == 1;
-            EXPECT(onePad);
-            if (onePad) {
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "extendedButtons"), true);
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "rumble"), false);
-            }
-        }
-
-        TEST("caps roundtrip: hapticAudio is its own bit, apart from speaker");
-        // A client that plays the haptic waveform says so on its own; the
-        // speaker lane neither implies nor requires it.
-        auto res3 = cli.Put("/api/connections", auth,
-                            R"({"protocolVersion":3,
-                                "controllers":[{"ctrlIdx":0,"type":2,
-                                "caps":{"hapticAudio":true,"rumble":true}}]})",
-                            "application/json");
-        EXPECT(res3 && res3->status == 200);
-        auto view3 = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view3 && view3->status == 200);
-        if (view3) {
-            Json j = parseJson(view3->body);
-            if (j.contains("controllers") && j["controllers"].is_array() &&
-                j["controllers"].size() == 1) {
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "hapticAudio"), true);
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "rumble"), true);
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), false);
-                EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "mic"), false);
-            } else {
-                EXPECT(false);
-            }
-        }
-    }
-    {
-        TEST("GET /api/connections/:id for an unknown id: 404");
-        auto res = cli.Get("/api/connections/conn_ffffffff", auth);
-        EXPECT(res && res->status == 404);
-    }
-    // ---- GET /api/connections/:id/diagnostics ---------------------------------
-    {
-        TEST("GET /api/connections/:id/diagnostics without credentials: 401");
-        const std::string path = "/api/connections/" + connId + "/diagnostics";
-        auto none = cli.Get(path);
-        EXPECT(none && none->status == 401);
-        if (none) EXPECT_EQ(jsonStr(parseJson(none->body), "code"), std::string("NOT_PAIRED"));
-
-        TEST("GET /api/connections/:id/diagnostics with a proof of the wrong key: 401 BAD_PROOF");
-        uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
-        httplib::Headers wrong = {{"X-Device-Id", devId},
-                                  {"X-Hmac-Proof", computeHmacProof(otherKey, devId)}};
-        auto bad = cli.Get(path, wrong);
-        EXPECT(bad && bad->status == 401);
-        if (bad) EXPECT_EQ(jsonStr(parseJson(bad->body), "code"), std::string("BAD_PROOF"));
-
-        TEST("GET /api/connections/:id/diagnostics for an unknown connection: 404");
-        auto unknown = cli.Get("/api/connections/conn_ffffffff/diagnostics", auth);
-        EXPECT(unknown && unknown->status == 404);
-
-        TEST("GET /api/connections/:id/diagnostics for another device's connection: 404");
-        const std::string otherId = "dev-routes-other";
-        uint8_t secondKey[CRYPTO_KEY_SIZE];
-        for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
-            secondKey[i] = bits::lowByte(0x3CU ^ static_cast<uint32_t>(i));
-        }
-        putPairedDevice(otherId, hexEncode(secondKey, CRYPTO_KEY_SIZE));
-        const httplib::Headers otherAuth = {{"X-Device-Id", otherId},
-                                            {"X-Hmac-Proof", computeHmacProof(secondKey, otherId)}};
-        auto foreign = cli.Get(path, otherAuth);
-        EXPECT(foreign && foreign->status == 404);
-
-        TEST("GET /api/connections/:id/diagnostics: the connection's own document");
-        auto put = cli.Put("/api/connections", auth,
-                           R"({"protocolVersion":4,
-                               "controllers":[{"ctrlIdx":0,"type":2,
-                               "caps":{"rumble":true,"lightbar":true},"touchpadMode":"ds4"}]})",
-                           "application/json");
-        EXPECT(put && put->status == 200);
-        logMsg(LogLevel::INFO, "client", "Session from " + devId + " at 192.168.77.5");
-        logMsg(LogLevel::INFO, "client", "Session from " + otherId + " at 192.168.77.9");
-        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto diag = cli.Get(path, auth);
-        EXPECT(diag && diag->status == 200);
-        if (diag) {
-            const Json j = parseJson(diag->body);
-            EXPECT_EQ(jsonStr(j, "format"), std::string("satellite-connection-diagnostics.v1"));
-            EXPECT_EQ(jsonStr(jsonObject(j, "satellite"), "version"),
-                      std::string(SATELLITE_VERSION));
-            EXPECT_EQ(jsonObject(j, "satellite")["protocol"][1].get<long>(),
-                      static_cast<long>(PROTOCOL_VERSION));
-            EXPECT(j["backends"].is_array());
-            EXPECT_EQ(j["controllers"].size(), size_t{1});
-            if (j["controllers"].size() == 1) {
-                const Json& c = j["controllers"][0];
-                EXPECT_EQ(jsonStr(c, "appliedType"), std::string("dualsense"));
-                EXPECT_EQ(jsonStr(c, "requestedType"), std::string("dualsense"));
-                EXPECT_EQ(jsonStr(c, "touchpadMode"), std::string("ds4"));
-                EXPECT(jsonBool(jsonObject(c, "caps"), "lightbar"));
-                EXPECT(jsonObject(c, "input").contains("frames"));
-                EXPECT(jsonObject(c, "output").contains("rumble"));
-            }
-            EXPECT(jsonObject(j, "grants").contains("controllerAudio"));
-            EXPECT_EQ(jsonStr(jsonObject(j, "counters"), "scope"), std::string("process"));
-            for (const char* block : {"rx", "tx", "audio", "rejected"}) {
-                EXPECT(jsonObject(j, "counters").contains(block));
-            }
-            EXPECT(j.contains("controllerDb") && j["log"].is_array());
-
-            TEST("GET /api/connections/:id/diagnostics: its log lines name the requester "
-                 "\"this connection\" and nothing about the other client");
-            EXPECT(diag->body.find("Session from this connection at x.x.x.x") != std::string::npos);
-            EXPECT(diag->body.find(devId) == std::string::npos);
-            EXPECT(diag->body.find("192.168.77.5") == std::string::npos);
-            EXPECT(diag->body.find(otherId) == std::string::npos);
-            EXPECT(diag->body.find("192.168.77.9") == std::string::npos);
-            EXPECT(diag->body.find("RouteTester") == std::string::npos);
-        }
-
-        TEST("GET /api/connections/:id/diagnostics: a pairing requester's name, never paired, "
-             "is another client");
-        auto ask = cli.Post("/api/pair",
-                            R"({"deviceId":"dish-canary-stranger","deviceName":"CANARY-STRANGER",
-                                "clientPin":"5150","publicKey":"00"})",
-                            "application/json");
-        EXPECT(ask && ask->status == 200);
-        logMsg(LogLevel::INFO, "client", "Key check for " + devId + " beside CANARY-STRANGER");
-        logMsg(LogLevel::INFO, "client", "Key check for " + devId + " from fe80::1%en0");
-        EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
-        auto again = cli.Get(path, auth);
-        EXPECT(again && again->status == 200);
-        if (again) {
-            EXPECT(again->body.find("CANARY-STRANGER") == std::string::npos);
-            EXPECT(again->body.find("beside another client") != std::string::npos);
-
-            TEST("GET /api/connections/:id/diagnostics: an IPv6 address is masked");
-            EXPECT(again->body.find("fe80::1") == std::string::npos);
-            EXPECT(again->body.find("en0") == std::string::npos);
-        }
-    }
-    {
-        TEST("per-slot PUT: full descriptor upsert, path index wins");
-        auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth,
-                           R"({"type":0,"caps":{"rumble":true}})", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT(j.contains("epoch"));
-            EXPECT(j.contains("controller"));
-            if (j.contains("controller")) {
-                EXPECT_EQ(jsonInt(j["controller"], "ctrlIdx"), 5L);
-                EXPECT_EQ(jsonStr(j["controller"], "result"), std::string("ok"));
-            }
-        }
-    }
-    {
-        TEST("per-slot PUT without type: 400");
-        auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth,
-                           R"({"caps":{"rumble":true}})", "application/json");
-        EXPECT(res && res->status == 400);
-    }
-    {
-        TEST("per-slot PUT carries no version gate: the session already settled it");
-        auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth, R"({"type":0})",
-                           "application/json");
-        EXPECT(res && res->status == 200);
-    }
-    {
-        TEST("per-slot DELETE removes the slot, session lives on");
-        auto res = cli.Delete("/api/connections/" + connId + "/controllers/5", auth);
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT(jsonBool(parseJson(res->body), "ok"));
-        auto view = cli.Get("/api/connections/" + connId, auth);
-        EXPECT(view && view->status == 200);
-    }
-    {
-        TEST("per-slot DELETE on an unknown connection: 404");
-        auto res = cli.Delete("/api/connections/conn_ffffffff/controllers/0", auth);
-        EXPECT(res && res->status == 404);
-    }
-    {
-        TEST("DELETE /api/connections/:id: own-session close, no close-notify");
-        int notifiesBefore = clientPort.closeNotifies;
-        auto res = cli.Delete("/api/connections/" + connId, auth);
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT(jsonBool(parseJson(res->body), "ok"));
-        EXPECT_EQ(clientPort.closeNotifies, notifiesBefore);
-
-        TEST("DELETE of the already-closed session: 404");
-        auto res2 = cli.Delete("/api/connections/" + connId, auth);
-        EXPECT(res2 && res2->status == 404);
-    }
-
-    // ---- pairing: path A (server PIN) ---------------------------------------
-    {
-        TEST("POST /api/pair without deviceId: ok:false");
-        auto res = cli.Post("/api/pair", R"({"pin":"1234"})", "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonStr(j, "error"), std::string("missing deviceId"));
-        }
-    }
-    {
-        TEST("POST /api/pair with a wrong PIN: ok:false invalid/expired");
-        std::string wrong = wrongPinFor(pinSnapshot());
-        auto res =
-            cli.Post("/api/pair",
-                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-wrong","pin":")") +
-                         wrong + R"("})",
-                     "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonStr(j, "error"), std::string("invalid or expired PIN"));
-        }
-        EXPECT_EQ(storedKeyHex("dev-a-wrong"), std::string(""));
-    }
-    std::string pinPairedKeyHex;
-    {
-        TEST("path A: correct server PIN pairs and returns a random sharedKey");
-        std::string pin = pinSnapshot().currentPin;
-        auto res =
-            cli.Post("/api/pair",
-                     std::string(R"({"deviceId":"dev-a-pin","deviceName":"PinDev","pin":")") + pin +
-                         R"(","protocolVersion":)" + std::to_string(PROTOCOL_VERSION) + "}",
-                     "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonStr(j, "message"), std::string("paired successfully"));
-            pinPairedKeyHex = jsonStr(j, "sharedKey");
-            EXPECT(isHex(pinPairedKeyHex, 64));
-            EXPECT(!j.contains("serverPublicKey"));
-            EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
-        }
-        EXPECT_EQ(storedKeyHex("dev-a-pin"), pinPairedKeyHex);
-    }
-    {
-        TEST("path A with a client X25519 key: X25519-derived, key never on the wire");
-        uint8_t clientPk[32], clientSk[32];
-        crypto_kx_keypair(clientPk, clientSk);
-        std::string pin = pinSnapshot().currentPin;
-        auto res = cli.Post("/api/pair",
-                            std::string(R"({"protocolVersion":2,"deviceId":"dev-a-kx","pin":")") +
-                                pin + R"(","publicKey":")" + hexEncode(clientPk, 32) + R"("})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            std::string serverPkHex = jsonStr(j, "serverPublicKey");
-            EXPECT(isHex(serverPkHex, 64));
-            EXPECT(!j.contains("sharedKey")); // derived: never sent over the wire
-
-            // Client-side derivation must agree with the persisted server key.
-            uint8_t serverPk[32], rx[32], tx[32];
-            EXPECT(hexDecode(serverPkHex, serverPk, 32));
-            EXPECT(crypto_kx_client_session_keys(rx, tx, clientPk, clientSk, serverPk) == 0);
-            EXPECT_EQ(storedKeyHex("dev-a-kx"), hexEncode(tx, 32));
-        }
-    }
-    {
-        TEST("path A with an unusable client key: rejected, nothing persisted");
-        std::string pin = pinSnapshot().currentPin;
-        auto res =
-            cli.Post("/api/pair",
-                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-badkey","pin":")") +
-                         pin + R"(","publicKey":"zzzz"})",
-                     "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonStr(j, "error"), std::string("invalid public key"));
-        }
-        EXPECT_EQ(storedKeyHex("dev-a-badkey"), std::string(""));
-
-        TEST("a rejected key does not consume the operator PIN (retry can succeed)");
-        EXPECT_EQ(pinSnapshot().currentPin, pin);
-        EXPECT(verifyPin(pin)); // still valid; consumed here by the assertion
-    }
-    {
-        TEST("POST /api/pair beyond the range: 409 before any PIN check");
-        auto res = cli.Post("/api/pair", R"({"deviceId":"dev-v9","pin":"0000",
-                            "protocolVersion":9})",
-                            "application/json");
-        EXPECT(res && res->status == 409);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonInt(j, "supported"), static_cast<long>(PROTOCOL_VERSION));
-        }
-    }
-    {
-        TEST("POST /api/pair from a v1 client is serviced (wrong PIN classified, not 409)");
-        std::string wrong = wrongPinFor(pinSnapshot());
-        auto res = cli.Post("/api/pair",
-                            std::string(R"({"protocolVersion":1,"deviceId":"dev-v1","pin":")") +
-                                wrong + R"("})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) EXPECT_EQ(jsonBool(parseJson(res->body), "ok"), false);
-    }
-
-    // ---- pairing: key rotation ----------------------------------------------
-    {
-        TEST("hmacProof of the current key rotates it (and returns the new one)");
-        uint8_t curKey[CRYPTO_KEY_SIZE];
-        EXPECT(hexDecode(pinPairedKeyHex, curKey, CRYPTO_KEY_SIZE));
-        auto res =
-            cli.Post("/api/pair",
-                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-pin","hmacProof":")") +
-                         computeHmacProof(curKey, "dev-a-pin") + R"("})",
-                     "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonStr(j, "message"), std::string("key rotated"));
-            std::string rotated = jsonStr(j, "sharedKey");
-            EXPECT(isHex(rotated, 64));
-            EXPECT(rotated != pinPairedKeyHex);
-            EXPECT_EQ(storedKeyHex("dev-a-pin"), rotated);
-        }
-    }
-    {
-        TEST("a bad rotation proof falls through to the PIN paths (no PIN: fail)");
-        uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
-        std::string before = storedKeyHex("dev-a-pin");
-        auto res =
-            cli.Post("/api/pair",
-                     std::string(R"({"protocolVersion":2,"deviceId":"dev-a-pin","hmacProof":")") +
-                         computeHmacProof(otherKey, "dev-a-pin") + R"("})",
-                     "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonStr(j, "error"), std::string("invalid or expired PIN"));
-        }
-        EXPECT_EQ(storedKeyHex("dev-a-pin"), before); // key untouched
-    }
-
-    // ---- pairing: path B (dish PIN + poll) -----------------------------------
-    {
-        TEST("path B: clientPin registers a pending request");
-        auto res = cli.Post("/api/pair",
-                            R"({"protocolVersion":2,"deviceId":"dev-b-poll","deviceName":"B",
-                                "clientPin":"7391"})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonBool(j, "pending"), true);
-        }
-
-        TEST("path B: poll reads pending while the operator decides");
-        auto poll = cli.Get("/api/pair/status?deviceId=dev-b-poll");
-        EXPECT(poll && poll->status == 200);
-        if (poll) {
-            Json j = parseJson(poll->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonStr(j, "status"), std::string("pending"));
-        }
-
-        TEST("path B: operator accept hands the minted key back exactly once");
-        EXPECT(confirmPairing("dev-b-poll")); // operator side (dashboard/tray seam)
-        auto approved = cli.Get("/api/pair/status?deviceId=dev-b-poll");
-        EXPECT(approved && approved->status == 200);
-        std::string handedKey;
-        if (approved) {
-            Json j = parseJson(approved->body);
-            EXPECT_EQ(jsonBool(j, "ok"), true);
-            EXPECT_EQ(jsonStr(j, "status"), std::string("approved"));
-            handedKey = jsonStr(j, "sharedKey");
-            EXPECT(isHex(handedKey, 64));
-        }
-        EXPECT_EQ(storedKeyHex("dev-b-poll"), handedKey);
-
-        TEST("path B: a replayed poll gets none (single-use handback)");
-        auto replay = cli.Get("/api/pair/status?deviceId=dev-b-poll");
-        EXPECT(replay && replay->status == 200);
-        if (replay) {
-            Json j = parseJson(replay->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            EXPECT_EQ(jsonStr(j, "status"), std::string("none"));
-        }
-    }
-    {
-        TEST("path B: poll after operator deny reads none (deny erases the request)");
-        auto res = cli.Post("/api/pair",
-                            R"({"protocolVersion":2,"deviceId":"dev-b-deny","deviceName":"B2",
-                                "clientPin":"4185"})",
-                            "application/json");
-        EXPECT(res && res->status == 200);
-        EXPECT(declinePairing("dev-b-deny"));
-        auto poll = cli.Get("/api/pair/status?deviceId=dev-b-deny");
-        EXPECT(poll && poll->status == 200);
-        if (poll) {
-            Json j = parseJson(poll->body);
-            EXPECT_EQ(jsonBool(j, "ok"), false);
-            // Never "denied": PairRequestState::Denied is assigned nowhere.
-            EXPECT_EQ(jsonStr(j, "status"), std::string("none"));
-        }
-        EXPECT_EQ(storedKeyHex("dev-b-deny"), std::string(""));
-    }
-    {
-        TEST("pair status without deviceId: 400");
-        auto res = cli.Get("/api/pair/status");
-        EXPECT(res && res->status == 400);
-    }
-
-    // ---- self-unpair -----------------------------------------------------------
-    {
-        TEST("DELETE /api/pair without credentials: 401");
-        auto res = cli.Delete("/api/pair");
-        EXPECT(res && res->status == 401);
-
-        TEST("DELETE /api/pair: authed self-unpair removes the device");
-        auto ok = cli.Delete("/api/pair", auth);
-        EXPECT(ok && ok->status == 200);
-        if (ok) EXPECT(jsonBool(parseJson(ok->body), "ok"));
-        EXPECT_EQ(storedKeyHex(devId), std::string(""));
-
-        TEST("after self-unpair the old credentials are terminal: 401 NOT_PAIRED");
-        auto rejected = cli.Put("/api/connections", auth, "{}", "application/json");
-        EXPECT(rejected && rejected->status == 401);
-        if (rejected) {
-            EXPECT_EQ(jsonStr(parseJson(rejected->body), "code"), std::string("NOT_PAIRED"));
-        }
-    }
-
-    // ---- unauthenticated info surface -----------------------------------------
-    {
-        TEST("GET /api/server/capabilities: open, versioned, backend present");
-        auto res = cli.Get("/api/server/capabilities");
-        EXPECT(res && res->status == 200);
-        if (res) {
-            Json j = parseJson(res->body);
-            EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
-            EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
-            EXPECT(j.contains("backend") && j["backend"].is_object());
-            EXPECT(j.contains("backends") && j["backends"].is_array());
-            EXPECT(j.contains("host") && j["host"].is_object());
-            if (j.contains("backend")) EXPECT(!jsonStr(j["backend"], "id").empty());
-        }
-    }
-
-    // ---- shutdown guard ---------------------------------------------------------
-    {
-        TEST("PUT /api/connections while shutting down: 503");
-        putPairedDevice(devId, hexEncode(pairingKey, CRYPTO_KEY_SIZE)); // re-pair for auth
-        g_appRunning = false;
-        auto res = cli.Put("/api/connections", auth, "{}", "application/json");
-        EXPECT(res && res->status == 503);
+        TempHome home;
+        g_configStore = std::make_unique<ConfigStore>(Config{}, saveConfig);
         g_appRunning = true;
+        logWriter().start(std::make_unique<DiscardingLogSink>());
 
-        TEST("recovers once running again");
-        auto ok = cli.Put("/api/connections", auth, R"({"protocolVersion":2})", "application/json");
-        EXPECT(ok && ok->status == 200);
-    }
+        StubGamepad gamepad;
+        StubClient clientPort;
+        StubLog log;
+        SessionService svc(gamepad, clientPort, log, deriveSessionKey);
 
-    // ---- controller database mirror and the catalog it feeds --------------------
-    {
-        ControllerDbAdapter dbAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path, nullptr,
-                                      atomicWriteFile);
-        satellite::ControllerDbService controllerDb(dbAdapter, log, *g_configStore);
-        EXPECT(controllerDb.load());
-        g_controllerDbService = &controllerDb;
-        const std::string shippedManifest = [] {
-            std::ifstream f(std::string(WEB_DIR) + "/controllers/v1/manifest.json",
-                            std::ios::binary);
-            return std::string((std::istreambuf_iterator<char>(f)),
-                               std::istreambuf_iterator<char>());
-        }();
+        httplib::Server server;
+        registerClientRoutes(server, svc);
+        int port = server.bind_to_any_port("127.0.0.1");
+        if (port <= 0) {
+            std::cerr << "failed to bind loopback port\n";
+            return 1;
+        }
+        std::thread serverThread([&server] { server.listen_after_bind(); });
+        server.wait_until_ready();
 
-        TEST("GET /api/controllers/v1/manifest.json: the active manifest, byte for byte, "
-             "with an ETag");
-        auto manifest = cli.Get("/api/controllers/v1/manifest.json");
-        EXPECT(manifest && manifest->status == 200);
-        std::string etag;
-        if (manifest) {
-            EXPECT(manifest->body == shippedManifest);
-            etag = manifest->get_header_value("ETag");
-            EXPECT(etag.size() == 66 && etag.front() == '"' && etag.back() == '"');
+        httplib::Client cli("127.0.0.1", port);
+        cli.set_connection_timeout(5);
+        cli.set_read_timeout(5);
+
+        // Paired identity used throughout.
+        const std::string devId = "dev-routes-1";
+        uint8_t pairingKey[CRYPTO_KEY_SIZE];
+        for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
+            pairingKey[i] = bits::lowByte(0xA0U ^ static_cast<uint32_t>(i));
+        }
+        putPairedDevice(devId, hexEncode(pairingKey, CRYPTO_KEY_SIZE));
+        const std::string proof = computeHmacProof(pairingKey, devId);
+        const httplib::Headers auth = {{"X-Device-Id", devId}, {"X-Hmac-Proof", proof}};
+
+        // ---- clientAuthed: terminal-401 machine codes --------------------------
+        {
+            TEST("PUT /api/connections with no credentials: 401 NOT_PAIRED");
+            auto res = cli.Put("/api/connections", "{}", "application/json");
+            EXPECT(res && res->status == 401);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonStr(j, "error"), std::string("unauthorized"));
+                EXPECT_EQ(jsonStr(j, "code"), std::string("NOT_PAIRED"));
+            }
+        }
+        {
+            TEST("unknown deviceId: 401 NOT_PAIRED (never BAD_PROOF for strangers)");
+            httplib::Headers h = {{"X-Device-Id", "dev-unknown"}, {"X-Hmac-Proof", proof}};
+            auto res = cli.Put("/api/connections", h, "{}", "application/json");
+            EXPECT(res && res->status == 401);
+            if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "code"), std::string("NOT_PAIRED"));
+        }
+        {
+            TEST("known device, malformed proof: 401 BAD_PROOF");
+            httplib::Headers h = {{"X-Device-Id", devId}, {"X-Hmac-Proof", "zz-not-hex"}};
+            auto res = cli.Put("/api/connections", h, "{}", "application/json");
+            EXPECT(res && res->status == 401);
+            if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "code"), std::string("BAD_PROOF"));
+        }
+        {
+            TEST("known device, proof of the WRONG key: 401 BAD_PROOF");
+            uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
+            httplib::Headers h = {{"X-Device-Id", devId},
+                                  {"X-Hmac-Proof", computeHmacProof(otherKey, devId)}};
+            auto res = cli.Put("/api/connections", h, "{}", "application/json");
+            EXPECT(res && res->status == 401);
+            if (res) EXPECT_EQ(jsonStr(parseJson(res->body), "code"), std::string("BAD_PROOF"));
+        }
+        {
+            TEST("GET /api/connections/:id is authed too: 401 without credentials");
+            auto res = cli.Get("/api/connections/conn_00000000");
+            EXPECT(res && res->status == 401);
         }
 
-        TEST("GET .../manifest.json with its ETag in If-None-Match: 304");
-        auto again =
-            cli.Get("/api/controllers/v1/manifest.json", httplib::Headers{{"If-None-Match", etag}});
-        EXPECT(again && again->status == 304);
-
-        TEST("GET .../controllers.json and .../strings/<locale>.json: served under the "
-             "manifest's digest");
-        auto records = cli.Get("/api/controllers/v1/controllers.json");
-        EXPECT(records && records->status == 200);
-        if (records) {
-            satellite::ControllerDbManifest m;
-            satellite::parseControllerDbManifest(shippedManifest, m);
-            EXPECT_EQ(records->get_header_value("ETag"),
-                      "\"" + m.files["controllers.json"].sha256 + "\"");
-            EXPECT_EQ(records->body.size(), m.files["controllers.json"].bytes);
+        // ---- protocol-version negotiation ---------------------------------------
+        {
+            TEST("PUT /api/connections with an in-range older version: accepted and echoed");
+            auto res =
+                cli.Put("/api/connections", auth, R"({"protocolVersion":1})", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 1L);
         }
-        auto de = cli.Get("/api/controllers/v1/strings/de.json");
-        EXPECT(de && de->status == 200);
-        auto ptBr = cli.Get("/api/controllers/v1/strings/pt-BR.json");
-        EXPECT(ptBr && ptBr->status == 200);
-
-        TEST("GET .../strings/<locale>.json for a locale the manifest does not list: 404");
-        auto ja = cli.Get("/api/controllers/v1/strings/ja.json");
-        EXPECT(ja && ja->status == 404);
-
-        TEST("GET /api/catalog: the ETag names the active dbVersion and emulates comes from it");
-        auto catalog = cli.Get("/api/catalog");
-        EXPECT(catalog && catalog->status == 200);
-        if (catalog) {
-            EXPECT(catalog->get_header_value("ETag").find("+db1\"") != std::string::npos);
+        {
+            TEST("absent protocolVersion reads as 1: accepted, session speaks v1");
+            auto res = cli.Put("/api/connections", auth, "{}", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 1L);
         }
-        g_controllerDbService = nullptr;
-    }
+        {
+            TEST("PUT /api/connections beyond the range: 409 + supported/supportedMin echo");
+            auto res = cli.Put("/api/connections", auth,
+                               std::string(R"({"protocolVersion":)") +
+                                   std::to_string(PROTOCOL_VERSION + 1) + "}",
+                               "application/json");
+            EXPECT(res && res->status == 409);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonInt(j, "supported"), static_cast<long>(PROTOCOL_VERSION));
+                EXPECT_EQ(jsonInt(j, "supportedMin"), static_cast<long>(PROTOCOL_VERSION_MIN));
+            }
+        }
+        {
+            TEST("a protocol-4 offer is accepted and the session settles at 4");
+            auto res =
+                cli.Put("/api/connections", auth, R"({"protocolVersion":4})", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 4L);
+        }
+        {
+            TEST("a protocol-3 client keeps working: accepted and settled at 3");
+            auto res =
+                cli.Put("/api/connections", auth, R"({"protocolVersion":3})", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"), 3L);
+        }
+        {
+            TEST("a protocol-5 offer gets 409 naming [1, 4]");
+            auto res =
+                cli.Put("/api/connections", auth, R"({"protocolVersion":5})", "application/json");
+            EXPECT(res && res->status == 409);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonInt(j, "supported"), 4L);
+                EXPECT_EQ(jsonInt(j, "supportedMin"), 1L);
+            }
+        }
+        {
+            TEST("the current protocolVersion is accepted and echoed");
+            const std::string body =
+                std::string(R"({"protocolVersion":)") + std::to_string(PROTOCOL_VERSION) + "}";
+            auto res = cli.Put("/api/connections", auth, body, "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                EXPECT_EQ(jsonInt(parseJson(res->body), "protocolVersion"),
+                          static_cast<long>(PROTOCOL_VERSION));
+            }
+        }
 
-    server.stop();
-    serverThread.join();
-    logWriter().stop();
-    g_configStore.reset();
-    home.cleanup();
+        // ---- session upsert + reconcile + CRUD ----------------------------------
+        std::string connId;
+        {
+            TEST("authed PUT /api/connections: 200 with token/salt/connectionId");
+            // Offers the newest version so the echo pins it; every other body in
+            // this file speaks a fixed older version on purpose.
+            const std::string body = std::string(R"({
+                "protocolVersion": )") +
+                                     std::to_string(PROTOCOL_VERSION) + R"(,
+                "deviceName": "Route Tester",
+                "controllers": [
+                    {"ctrlIdx": 0, "type": 0, "caps": {"rumble": true, "analogTriggers": true}},
+                    {"ctrlIdx": 1, "type": 1, "caps": {"motion": true, "lightbar": true},
+                     "touchpadMode": "ds4"}
+                ]
+            })";
+            auto res = cli.Put("/api/connections", auth, body, "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                connId = jsonStr(j, "connectionId");
+                EXPECT_EQ(connId.rfind("conn_", 0), size_t{0});
+                EXPECT(isHex(jsonStr(j, "token"), 8));
+                EXPECT(isHex(jsonStr(j, "sessionSalt"), SESSION_SALT_SIZE * 2));
+                EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
+                EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
+                EXPECT(j.contains("controllers") && j["controllers"].is_array() &&
+                       j["controllers"].size() == 2);
+                if (j.contains("controllers") && j["controllers"].size() == 2) {
+                    EXPECT_EQ(jsonStr(j["controllers"][0], "result"), std::string("ok"));
+                    EXPECT_EQ(jsonInt(j["controllers"][1], "ctrlIdx"), 1L);
+                }
+                EXPECT(j.contains("hostFeatures"));
+                if (j.contains("hostFeatures")) {
+                    EXPECT_EQ(jsonBool(j["hostFeatures"]["mouseControl"], "granted"), false);
+                }
+            }
+        }
+        std::string firstToken;
+        {
+            TEST("re-PUT converges in place: same connectionId, rotated token");
+            auto res1 = cli.Put("/api/connections", auth,
+                                R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
+                                "application/json");
+            EXPECT(res1 && res1->status == 200);
+            if (res1) firstToken = jsonStr(parseJson(res1->body), "token");
+            auto res2 = cli.Put("/api/connections", auth,
+                                R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
+                                "application/json");
+            EXPECT(res2 && res2->status == 200);
+            if (res1 && res2) {
+                Json j2 = parseJson(res2->body);
+                EXPECT_EQ(jsonStr(j2, "connectionId"), connId);
+                EXPECT(jsonStr(j2, "token") != firstToken);
+            }
+        }
+        {
+            TEST("a re-PUT from the same address under the same name publishes no new config");
+            const std::shared_ptr<const Config> settled = g_configStore->current();
+            auto res = cli.Put("/api/connections", auth,
+                               R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
+                               "application/json");
+            EXPECT(res && res->status == 200);
+            EXPECT(g_configStore->current() == settled);
+        }
+        {
+            TEST("a re-PUT under a new name publishes the new name");
+            auto res = cli.Put("/api/connections", auth,
+                               R"({"protocolVersion":2,"deviceName":"Renamed Tester",
+                                   "controllers":[{"ctrlIdx":0,"type":0}]})",
+                               "application/json");
+            EXPECT(res && res->status == 200);
+            PairedDevice stored;
+            EXPECT(findPairedDevice(devId, stored));
+            EXPECT_EQ(stored.name, std::string("Renamed Tester"));
+        }
+        {
+            TEST("malformed controllers array (missing type): 400");
+            auto res = cli.Put("/api/connections", auth,
+                               R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0}]})",
+                               "application/json");
+            EXPECT(res && res->status == 400);
+        }
+        {
+            TEST("PUT /api/connections with a body that is not a JSON object: 400");
+            auto res = cli.Put("/api/connections", auth, "{\"controllers\":[", "application/json");
+            EXPECT(res && res->status == 400);
+        }
+        {
+            TEST("PUT /api/connections nesting hostFeatures 5000 deep: 400, and the server lives");
+            auto res =
+                cli.Put("/api/connections", auth, hostFeaturesNested(5000), "application/json");
+            EXPECT(res && res->status == 400);
+            auto after = cli.Get("/api/server/capabilities");
+            EXPECT(after && after->status == 200);
+        }
+        {
+            TEST("auth via body keys (deviceId/hmacProof) works without headers");
+            const std::string body = std::string(R"({"protocolVersion":2,"deviceId":")") + devId +
+                                     R"(","hmacProof":")" + proof + R"("})";
+            auto res = cli.Put("/api/connections", body, "application/json");
+            EXPECT(res && res->status == 200);
+        }
+        {
+            TEST("GET /api/connections/:id (reconcile view): applied state echoed");
+            auto res = cli.Put("/api/connections", auth,
+                               R"({"protocolVersion":2,
+                                   "controllers":[{"ctrlIdx":3,"type":1,"caps":{"motion":true},
+                                   "touchpadMode":"ds4"}]})",
+                               "application/json");
+            EXPECT(res && res->status == 200);
+            auto view = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view && view->status == 200);
+            if (view) {
+                Json j = parseJson(view->body);
+                EXPECT_EQ(jsonStr(j, "connectionId"), connId);
+                EXPECT_EQ(jsonStr(j, "deviceId"), devId);
+                EXPECT(j.contains("controllers") && j["controllers"].is_array() &&
+                       j["controllers"].size() == 1);
+                if (j.contains("controllers") && j["controllers"].size() == 1) {
+                    const Json& c = j["controllers"][0];
+                    EXPECT_EQ(jsonInt(c, "ctrlIdx"), 3L);
+                    EXPECT_EQ(jsonStr(c, "touchpadMode"), std::string("ds4"));
+                    EXPECT_EQ(jsonBool(c["caps"], "motion"), true);
+                    EXPECT_EQ(jsonBool(c["caps"], "rumble"), false);
+                }
+            }
+        }
+        {
+            TEST("caps roundtrip: triggerEffects/playerLeds parse and echo in the view");
+            auto res = cli.Put("/api/connections", auth,
+                               R"({"protocolVersion":2,
+                                   "controllers":[{"ctrlIdx":0,"type":2,
+                                   "caps":{"rumble":true,"triggerEffects":true,"playerLeds":true}}]})",
+                               "application/json");
+            EXPECT(res && res->status == 200);
+            auto view = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view && view->status == 200);
+            if (view) {
+                Json j = parseJson(view->body);
+                if (j.contains("controllers") && j["controllers"].is_array() &&
+                    j["controllers"].size() == 1) {
+                    const Json& c = j["controllers"][0];
+                    EXPECT_EQ(jsonBool(c["caps"], "triggerEffects"), true);
+                    EXPECT_EQ(jsonBool(c["caps"], "playerLeds"), true);
+                    EXPECT_EQ(jsonBool(c["caps"], "lightbar"), false);
+                } else {
+                    EXPECT(false);
+                }
+            }
+            // An absent caps object parses to no caps bits, not an error.
+            auto res2 = cli.Put("/api/connections", auth,
+                                R"({"protocolVersion":2,"controllers":[{"ctrlIdx":0,"type":0}]})",
+                                "application/json");
+            EXPECT(res2 && res2->status == 200);
+            auto view2 = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view2 && view2->status == 200);
+            if (view2) {
+                Json j = parseJson(view2->body);
+                if (j.contains("controllers") && j["controllers"].is_array() &&
+                    j["controllers"].size() == 1) {
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "triggerEffects"), false);
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "playerLeds"), false);
+                }
+            }
+        }
+        {
+            TEST("caps roundtrip: mic/speaker parse and echo independently in the view");
+            // The two audio caps are independent directions (mic = the client
+            // sources audio, speaker = the client accepts it), so a descriptor
+            // asking for one must not grant the other.
+            auto res = cli.Put("/api/connections", auth,
+                               R"({"protocolVersion":2,
+                                   "controllers":[{"ctrlIdx":0,"type":2,
+                                   "caps":{"mic":true,"speaker":false}}]})",
+                               "application/json");
+            EXPECT(res && res->status == 200);
+            auto view = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view && view->status == 200);
+            if (view) {
+                Json j = parseJson(view->body);
+                if (j.contains("controllers") && j["controllers"].is_array() &&
+                    j["controllers"].size() == 1) {
+                    const Json& c = j["controllers"][0];
+                    EXPECT_EQ(jsonBool(c["caps"], "mic"), true);
+                    EXPECT_EQ(jsonBool(c["caps"], "speaker"), false);
+                    // Neighbouring bits must not be set by the audio pair.
+                    EXPECT_EQ(jsonBool(c["caps"], "triggerEffects"), false);
+                    EXPECT_EQ(jsonBool(c["caps"], "playerLeds"), false);
+                    EXPECT_EQ(jsonBool(c["caps"], "lightbar"), false);
+                    EXPECT_EQ(jsonBool(c["caps"], "hapticAudio"), false);
+                } else {
+                    EXPECT(false);
+                }
+            }
+            auto res2 = cli.Put("/api/connections", auth,
+                                R"({"protocolVersion":2,
+                                    "controllers":[{"ctrlIdx":0,"type":2,
+                                    "caps":{"speaker":true}}]})",
+                                "application/json");
+            EXPECT(res2 && res2->status == 200);
+            auto view2 = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view2 && view2->status == 200);
+            if (view2) {
+                Json j = parseJson(view2->body);
+                if (j.contains("controllers") && j["controllers"].is_array() &&
+                    j["controllers"].size() == 1) {
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "mic"), false);
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), true);
+                } else {
+                    EXPECT(false);
+                }
+            }
 
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+            TEST("caps roundtrip: the session view echoes the extendedButtons claim");
+            auto res4 = cli.Put("/api/connections", auth,
+                                R"({"protocolVersion":4,
+                                    "controllers":[{"ctrlIdx":0,"type":0,
+                                    "caps":{"extendedButtons":true}}]})",
+                                "application/json");
+            EXPECT(res4 && res4->status == 200);
+            auto view4 = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view4 && view4->status == 200);
+            if (view4) {
+                Json j = parseJson(view4->body);
+                const bool onePad = j.contains("controllers") && j["controllers"].is_array() &&
+                                    j["controllers"].size() == 1;
+                EXPECT(onePad);
+                if (onePad) {
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "extendedButtons"), true);
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "rumble"), false);
+                }
+            }
+
+            TEST("caps roundtrip: hapticAudio is its own bit, apart from speaker");
+            // A client that plays the haptic waveform says so on its own; the
+            // speaker lane neither implies nor requires it.
+            auto res3 = cli.Put("/api/connections", auth,
+                                R"({"protocolVersion":3,
+                                    "controllers":[{"ctrlIdx":0,"type":2,
+                                    "caps":{"hapticAudio":true,"rumble":true}}]})",
+                                "application/json");
+            EXPECT(res3 && res3->status == 200);
+            auto view3 = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view3 && view3->status == 200);
+            if (view3) {
+                Json j = parseJson(view3->body);
+                if (j.contains("controllers") && j["controllers"].is_array() &&
+                    j["controllers"].size() == 1) {
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "hapticAudio"), true);
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "rumble"), true);
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "speaker"), false);
+                    EXPECT_EQ(jsonBool(j["controllers"][0]["caps"], "mic"), false);
+                } else {
+                    EXPECT(false);
+                }
+            }
+        }
+        {
+            TEST("GET /api/connections/:id for an unknown id: 404");
+            auto res = cli.Get("/api/connections/conn_ffffffff", auth);
+            EXPECT(res && res->status == 404);
+        }
+        // ---- GET /api/connections/:id/diagnostics ---------------------------------
+        {
+            TEST("GET /api/connections/:id/diagnostics without credentials: 401");
+            const std::string path = "/api/connections/" + connId + "/diagnostics";
+            auto none = cli.Get(path);
+            EXPECT(none && none->status == 401);
+            if (none) EXPECT_EQ(jsonStr(parseJson(none->body), "code"), std::string("NOT_PAIRED"));
+
+            TEST("GET /api/connections/:id/diagnostics with a proof of the wrong key: 401 "
+                 "BAD_PROOF");
+            uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
+            httplib::Headers wrong = {{"X-Device-Id", devId},
+                                      {"X-Hmac-Proof", computeHmacProof(otherKey, devId)}};
+            auto bad = cli.Get(path, wrong);
+            EXPECT(bad && bad->status == 401);
+            if (bad) EXPECT_EQ(jsonStr(parseJson(bad->body), "code"), std::string("BAD_PROOF"));
+
+            TEST("GET /api/connections/:id/diagnostics for an unknown connection: 404");
+            auto unknown = cli.Get("/api/connections/conn_ffffffff/diagnostics", auth);
+            EXPECT(unknown && unknown->status == 404);
+
+            TEST("GET /api/connections/:id/diagnostics for another device's connection: 404");
+            const std::string otherId = "dev-routes-other";
+            uint8_t secondKey[CRYPTO_KEY_SIZE];
+            for (int i = 0; i < CRYPTO_KEY_SIZE; i++) {
+                secondKey[i] = bits::lowByte(0x3CU ^ static_cast<uint32_t>(i));
+            }
+            putPairedDevice(otherId, hexEncode(secondKey, CRYPTO_KEY_SIZE));
+            const httplib::Headers otherAuth = {
+                {"X-Device-Id", otherId}, {"X-Hmac-Proof", computeHmacProof(secondKey, otherId)}};
+            auto foreign = cli.Get(path, otherAuth);
+            EXPECT(foreign && foreign->status == 404);
+
+            TEST("GET /api/connections/:id/diagnostics: the connection's own document");
+            auto put = cli.Put("/api/connections", auth,
+                               R"({"protocolVersion":4,
+                                   "controllers":[{"ctrlIdx":0,"type":2,
+                                   "caps":{"rumble":true,"lightbar":true},"touchpadMode":"ds4"}]})",
+                               "application/json");
+            EXPECT(put && put->status == 200);
+            logMsg(LogLevel::INFO, "client", "Session from " + devId + " at 192.168.77.5");
+            logMsg(LogLevel::INFO, "client", "Session from " + otherId + " at 192.168.77.9");
+            EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+            auto diag = cli.Get(path, auth);
+            EXPECT(diag && diag->status == 200);
+            if (diag) {
+                const Json j = parseJson(diag->body);
+                EXPECT_EQ(jsonStr(j, "format"), std::string("satellite-connection-diagnostics.v1"));
+                EXPECT_EQ(jsonStr(jsonObject(j, "satellite"), "version"),
+                          std::string(SATELLITE_VERSION));
+                EXPECT_EQ(jsonObject(j, "satellite")["protocol"][1].get<long>(),
+                          static_cast<long>(PROTOCOL_VERSION));
+                EXPECT(j["backends"].is_array());
+                EXPECT_EQ(j["controllers"].size(), size_t{1});
+                if (j["controllers"].size() == 1) {
+                    const Json& c = j["controllers"][0];
+                    EXPECT_EQ(jsonStr(c, "appliedType"), std::string("dualsense"));
+                    EXPECT_EQ(jsonStr(c, "requestedType"), std::string("dualsense"));
+                    EXPECT_EQ(jsonStr(c, "touchpadMode"), std::string("ds4"));
+                    EXPECT(jsonBool(jsonObject(c, "caps"), "lightbar"));
+                    EXPECT(jsonObject(c, "input").contains("frames"));
+                    EXPECT(jsonObject(c, "output").contains("rumble"));
+                }
+                EXPECT(jsonObject(j, "grants").contains("controllerAudio"));
+                EXPECT_EQ(jsonStr(jsonObject(j, "counters"), "scope"), std::string("process"));
+                for (const char* block : {"rx", "tx", "audio", "rejected"}) {
+                    EXPECT(jsonObject(j, "counters").contains(block));
+                }
+                EXPECT(j.contains("controllerDb") && j["log"].is_array());
+
+                TEST("GET /api/connections/:id/diagnostics: its log lines name the requester "
+                     "\"this connection\" and nothing about the other client");
+                EXPECT(diag->body.find("Session from this connection at x.x.x.x") !=
+                       std::string::npos);
+                EXPECT(diag->body.find(devId) == std::string::npos);
+                EXPECT(diag->body.find("192.168.77.5") == std::string::npos);
+                EXPECT(diag->body.find(otherId) == std::string::npos);
+                EXPECT(diag->body.find("192.168.77.9") == std::string::npos);
+                EXPECT(diag->body.find("RouteTester") == std::string::npos);
+            }
+
+            TEST("GET /api/connections/:id/diagnostics: a pairing requester's name, never paired, "
+                 "is another client");
+            auto ask =
+                cli.Post("/api/pair",
+                         R"({"deviceId":"dish-canary-stranger","deviceName":"CANARY-STRANGER",
+                                    "clientPin":"5150","publicKey":"00"})",
+                         "application/json");
+            EXPECT(ask && ask->status == 200);
+            logMsg(LogLevel::INFO, "client", "Key check for " + devId + " beside CANARY-STRANGER");
+            logMsg(LogLevel::INFO, "client", "Key check for " + devId + " from fe80::1%en0");
+            EXPECT(logWriter().flush(LOG_FLUSH_DEADLINE));
+            auto again = cli.Get(path, auth);
+            EXPECT(again && again->status == 200);
+            if (again) {
+                EXPECT(again->body.find("CANARY-STRANGER") == std::string::npos);
+                EXPECT(again->body.find("beside another client") != std::string::npos);
+
+                TEST("GET /api/connections/:id/diagnostics: an IPv6 address is masked");
+                EXPECT(again->body.find("fe80::1") == std::string::npos);
+                EXPECT(again->body.find("en0") == std::string::npos);
+            }
+        }
+        {
+            TEST("per-slot PUT: full descriptor upsert, path index wins");
+            auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth,
+                               R"({"type":0,"caps":{"rumble":true}})", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT(j.contains("epoch"));
+                EXPECT(j.contains("controller"));
+                if (j.contains("controller")) {
+                    EXPECT_EQ(jsonInt(j["controller"], "ctrlIdx"), 5L);
+                    EXPECT_EQ(jsonStr(j["controller"], "result"), std::string("ok"));
+                }
+            }
+        }
+        {
+            TEST("per-slot PUT without type: 400");
+            auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth,
+                               R"({"caps":{"rumble":true}})", "application/json");
+            EXPECT(res && res->status == 400);
+        }
+        {
+            TEST("per-slot PUT carries no version gate: the session already settled it");
+            auto res = cli.Put("/api/connections/" + connId + "/controllers/5", auth,
+                               R"({"type":0})", "application/json");
+            EXPECT(res && res->status == 200);
+        }
+        {
+            TEST("per-slot DELETE removes the slot, session lives on");
+            auto res = cli.Delete("/api/connections/" + connId + "/controllers/5", auth);
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT(jsonBool(parseJson(res->body), "ok"));
+            auto view = cli.Get("/api/connections/" + connId, auth);
+            EXPECT(view && view->status == 200);
+        }
+        {
+            TEST("per-slot DELETE on an unknown connection: 404");
+            auto res = cli.Delete("/api/connections/conn_ffffffff/controllers/0", auth);
+            EXPECT(res && res->status == 404);
+        }
+        {
+            TEST("DELETE /api/connections/:id: own-session close, no close-notify");
+            int notifiesBefore = clientPort.closeNotifies;
+            auto res = cli.Delete("/api/connections/" + connId, auth);
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT(jsonBool(parseJson(res->body), "ok"));
+            EXPECT_EQ(clientPort.closeNotifies, notifiesBefore);
+
+            TEST("DELETE of the already-closed session: 404");
+            auto res2 = cli.Delete("/api/connections/" + connId, auth);
+            EXPECT(res2 && res2->status == 404);
+        }
+
+        // ---- pairing: path A (server PIN) ---------------------------------------
+        {
+            TEST("POST /api/pair without deviceId: ok:false");
+            auto res = cli.Post("/api/pair", R"({"pin":"1234"})", "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonStr(j, "error"), std::string("missing deviceId"));
+            }
+        }
+        {
+            TEST("POST /api/pair with a wrong PIN: ok:false invalid/expired");
+            std::string wrong = wrongPinFor(pinSnapshot());
+            auto res =
+                cli.Post("/api/pair",
+                         std::string(R"({"protocolVersion":2,"deviceId":"dev-a-wrong","pin":")") +
+                             wrong + R"("})",
+                         "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonStr(j, "error"), std::string("invalid or expired PIN"));
+            }
+            EXPECT_EQ(storedKeyHex("dev-a-wrong"), std::string(""));
+        }
+        std::string pinPairedKeyHex;
+        {
+            TEST("path A: correct server PIN pairs and returns a random sharedKey");
+            std::string pin = pinSnapshot().currentPin;
+            auto res = cli.Post(
+                "/api/pair",
+                std::string(R"({"deviceId":"dev-a-pin","deviceName":"PinDev","pin":")") + pin +
+                    R"(","protocolVersion":)" + std::to_string(PROTOCOL_VERSION) + "}",
+                "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonStr(j, "message"), std::string("paired successfully"));
+                pinPairedKeyHex = jsonStr(j, "sharedKey");
+                EXPECT(isHex(pinPairedKeyHex, 64));
+                EXPECT(!j.contains("serverPublicKey"));
+                EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
+            }
+            EXPECT_EQ(storedKeyHex("dev-a-pin"), pinPairedKeyHex);
+        }
+        {
+            TEST("path A with a client X25519 key: X25519-derived, key never on the wire");
+            uint8_t clientPk[32], clientSk[32];
+            crypto_kx_keypair(clientPk, clientSk);
+            std::string pin = pinSnapshot().currentPin;
+            auto res =
+                cli.Post("/api/pair",
+                         std::string(R"({"protocolVersion":2,"deviceId":"dev-a-kx","pin":")") +
+                             pin + R"(","publicKey":")" + hexEncode(clientPk, 32) + R"("})",
+                         "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                std::string serverPkHex = jsonStr(j, "serverPublicKey");
+                EXPECT(isHex(serverPkHex, 64));
+                EXPECT(!j.contains("sharedKey")); // derived: never sent over the wire
+
+                // Client-side derivation must agree with the persisted server key.
+                uint8_t serverPk[32], rx[32], tx[32];
+                EXPECT(hexDecode(serverPkHex, serverPk, 32));
+                EXPECT(crypto_kx_client_session_keys(rx, tx, clientPk, clientSk, serverPk) == 0);
+                EXPECT_EQ(storedKeyHex("dev-a-kx"), hexEncode(tx, 32));
+            }
+        }
+        {
+            TEST("path A with an unusable client key: rejected, nothing persisted");
+            std::string pin = pinSnapshot().currentPin;
+            auto res =
+                cli.Post("/api/pair",
+                         std::string(R"({"protocolVersion":2,"deviceId":"dev-a-badkey","pin":")") +
+                             pin + R"(","publicKey":"zzzz"})",
+                         "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonStr(j, "error"), std::string("invalid public key"));
+            }
+            EXPECT_EQ(storedKeyHex("dev-a-badkey"), std::string(""));
+
+            TEST("a rejected key does not consume the operator PIN (retry can succeed)");
+            EXPECT_EQ(pinSnapshot().currentPin, pin);
+            EXPECT(verifyPin(pin)); // still valid; consumed here by the assertion
+        }
+        {
+            TEST("POST /api/pair beyond the range: 409 before any PIN check");
+            auto res = cli.Post("/api/pair", R"({"deviceId":"dev-v9","pin":"0000",
+                                "protocolVersion":9})",
+                                "application/json");
+            EXPECT(res && res->status == 409);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonInt(j, "supported"), static_cast<long>(PROTOCOL_VERSION));
+            }
+        }
+        {
+            TEST("POST /api/pair from a v1 client is serviced (wrong PIN classified, not 409)");
+            std::string wrong = wrongPinFor(pinSnapshot());
+            auto res = cli.Post("/api/pair",
+                                std::string(R"({"protocolVersion":1,"deviceId":"dev-v1","pin":")") +
+                                    wrong + R"("})",
+                                "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) EXPECT_EQ(jsonBool(parseJson(res->body), "ok"), false);
+        }
+
+        // ---- pairing: key rotation ----------------------------------------------
+        {
+            TEST("hmacProof of the current key rotates it (and returns the new one)");
+            uint8_t curKey[CRYPTO_KEY_SIZE];
+            EXPECT(hexDecode(pinPairedKeyHex, curKey, CRYPTO_KEY_SIZE));
+            auto res = cli.Post(
+                "/api/pair",
+                std::string(R"({"protocolVersion":2,"deviceId":"dev-a-pin","hmacProof":")") +
+                    computeHmacProof(curKey, "dev-a-pin") + R"("})",
+                "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonStr(j, "message"), std::string("key rotated"));
+                std::string rotated = jsonStr(j, "sharedKey");
+                EXPECT(isHex(rotated, 64));
+                EXPECT(rotated != pinPairedKeyHex);
+                EXPECT_EQ(storedKeyHex("dev-a-pin"), rotated);
+            }
+        }
+        {
+            TEST("a bad rotation proof falls through to the PIN paths (no PIN: fail)");
+            uint8_t otherKey[CRYPTO_KEY_SIZE] = {};
+            std::string before = storedKeyHex("dev-a-pin");
+            auto res = cli.Post(
+                "/api/pair",
+                std::string(R"({"protocolVersion":2,"deviceId":"dev-a-pin","hmacProof":")") +
+                    computeHmacProof(otherKey, "dev-a-pin") + R"("})",
+                "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonStr(j, "error"), std::string("invalid or expired PIN"));
+            }
+            EXPECT_EQ(storedKeyHex("dev-a-pin"), before); // key untouched
+        }
+
+        // ---- pairing: path B (dish PIN + poll) -----------------------------------
+        {
+            TEST("path B: clientPin registers a pending request");
+            auto res = cli.Post("/api/pair",
+                                R"({"protocolVersion":2,"deviceId":"dev-b-poll","deviceName":"B",
+                                    "clientPin":"7391"})",
+                                "application/json");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonBool(j, "pending"), true);
+            }
+
+            TEST("path B: poll reads pending while the operator decides");
+            auto poll = cli.Get("/api/pair/status?deviceId=dev-b-poll");
+            EXPECT(poll && poll->status == 200);
+            if (poll) {
+                Json j = parseJson(poll->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonStr(j, "status"), std::string("pending"));
+            }
+
+            TEST("path B: operator accept hands the minted key back exactly once");
+            EXPECT(confirmPairing("dev-b-poll")); // operator side (dashboard/tray seam)
+            auto approved = cli.Get("/api/pair/status?deviceId=dev-b-poll");
+            EXPECT(approved && approved->status == 200);
+            std::string handedKey;
+            if (approved) {
+                Json j = parseJson(approved->body);
+                EXPECT_EQ(jsonBool(j, "ok"), true);
+                EXPECT_EQ(jsonStr(j, "status"), std::string("approved"));
+                handedKey = jsonStr(j, "sharedKey");
+                EXPECT(isHex(handedKey, 64));
+            }
+            EXPECT_EQ(storedKeyHex("dev-b-poll"), handedKey);
+
+            TEST("path B: a replayed poll gets none (single-use handback)");
+            auto replay = cli.Get("/api/pair/status?deviceId=dev-b-poll");
+            EXPECT(replay && replay->status == 200);
+            if (replay) {
+                Json j = parseJson(replay->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                EXPECT_EQ(jsonStr(j, "status"), std::string("none"));
+            }
+        }
+        {
+            TEST("path B: poll after operator deny reads none (deny erases the request)");
+            auto res = cli.Post("/api/pair",
+                                R"({"protocolVersion":2,"deviceId":"dev-b-deny","deviceName":"B2",
+                                    "clientPin":"4185"})",
+                                "application/json");
+            EXPECT(res && res->status == 200);
+            EXPECT(declinePairing("dev-b-deny"));
+            auto poll = cli.Get("/api/pair/status?deviceId=dev-b-deny");
+            EXPECT(poll && poll->status == 200);
+            if (poll) {
+                Json j = parseJson(poll->body);
+                EXPECT_EQ(jsonBool(j, "ok"), false);
+                // Never "denied": PairRequestState::Denied is assigned nowhere.
+                EXPECT_EQ(jsonStr(j, "status"), std::string("none"));
+            }
+            EXPECT_EQ(storedKeyHex("dev-b-deny"), std::string(""));
+        }
+        {
+            TEST("pair status without deviceId: 400");
+            auto res = cli.Get("/api/pair/status");
+            EXPECT(res && res->status == 400);
+        }
+
+        // ---- self-unpair -----------------------------------------------------------
+        {
+            TEST("DELETE /api/pair without credentials: 401");
+            auto res = cli.Delete("/api/pair");
+            EXPECT(res && res->status == 401);
+
+            TEST("DELETE /api/pair: authed self-unpair removes the device");
+            auto ok = cli.Delete("/api/pair", auth);
+            EXPECT(ok && ok->status == 200);
+            if (ok) EXPECT(jsonBool(parseJson(ok->body), "ok"));
+            EXPECT_EQ(storedKeyHex(devId), std::string(""));
+
+            TEST("after self-unpair the old credentials are terminal: 401 NOT_PAIRED");
+            auto rejected = cli.Put("/api/connections", auth, "{}", "application/json");
+            EXPECT(rejected && rejected->status == 401);
+            if (rejected) {
+                EXPECT_EQ(jsonStr(parseJson(rejected->body), "code"), std::string("NOT_PAIRED"));
+            }
+        }
+
+        // ---- unauthenticated info surface -----------------------------------------
+        {
+            TEST("GET /api/server/capabilities: open, versioned, backend present");
+            auto res = cli.Get("/api/server/capabilities");
+            EXPECT(res && res->status == 200);
+            if (res) {
+                Json j = parseJson(res->body);
+                EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
+                EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
+                EXPECT(j.contains("backend") && j["backend"].is_object());
+                EXPECT(j.contains("backends") && j["backends"].is_array());
+                EXPECT(j.contains("host") && j["host"].is_object());
+                if (j.contains("backend")) EXPECT(!jsonStr(j["backend"], "id").empty());
+            }
+        }
+
+        // ---- shutdown guard ---------------------------------------------------------
+        {
+            TEST("PUT /api/connections while shutting down: 503");
+            putPairedDevice(devId, hexEncode(pairingKey, CRYPTO_KEY_SIZE)); // re-pair for auth
+            g_appRunning = false;
+            auto res = cli.Put("/api/connections", auth, "{}", "application/json");
+            EXPECT(res && res->status == 503);
+            g_appRunning = true;
+
+            TEST("recovers once running again");
+            auto ok =
+                cli.Put("/api/connections", auth, R"({"protocolVersion":2})", "application/json");
+            EXPECT(ok && ok->status == 200);
+        }
+
+        // ---- controller database mirror and the catalog it feeds --------------------
+        {
+            ControllerDbAdapter dbAdapter(std::string(WEB_DIR) + "/controllers/v1", home.path,
+                                          nullptr, atomicWriteFile);
+            satellite::ControllerDbService controllerDb(dbAdapter, log, *g_configStore);
+            EXPECT(controllerDb.load());
+            g_controllerDbService = &controllerDb;
+            const std::string shippedManifest = [] {
+                std::ifstream f(std::string(WEB_DIR) + "/controllers/v1/manifest.json",
+                                std::ios::binary);
+                return std::string((std::istreambuf_iterator<char>(f)),
+                                   std::istreambuf_iterator<char>());
+            }();
+
+            TEST("GET /api/controllers/v1/manifest.json: the active manifest, byte for byte, "
+                 "with an ETag");
+            auto manifest = cli.Get("/api/controllers/v1/manifest.json");
+            EXPECT(manifest && manifest->status == 200);
+            std::string etag;
+            if (manifest) {
+                EXPECT(manifest->body == shippedManifest);
+                etag = manifest->get_header_value("ETag");
+                EXPECT(etag.size() == 66 && etag.front() == '"' && etag.back() == '"');
+            }
+
+            TEST("GET .../manifest.json with its ETag in If-None-Match: 304");
+            auto again = cli.Get("/api/controllers/v1/manifest.json",
+                                 httplib::Headers{{"If-None-Match", etag}});
+            EXPECT(again && again->status == 304);
+
+            TEST("GET .../controllers.json and .../strings/<locale>.json: served under the "
+                 "manifest's digest");
+            auto records = cli.Get("/api/controllers/v1/controllers.json");
+            EXPECT(records && records->status == 200);
+            if (records) {
+                satellite::ControllerDbManifest m;
+                satellite::parseControllerDbManifest(shippedManifest, m);
+                EXPECT_EQ(records->get_header_value("ETag"),
+                          "\"" + m.files["controllers.json"].sha256 + "\"");
+                EXPECT_EQ(records->body.size(), m.files["controllers.json"].bytes);
+            }
+            auto de = cli.Get("/api/controllers/v1/strings/de.json");
+            EXPECT(de && de->status == 200);
+            auto ptBr = cli.Get("/api/controllers/v1/strings/pt-BR.json");
+            EXPECT(ptBr && ptBr->status == 200);
+
+            TEST("GET .../strings/<locale>.json for a locale the manifest does not list: 404");
+            auto ja = cli.Get("/api/controllers/v1/strings/ja.json");
+            EXPECT(ja && ja->status == 404);
+
+            TEST(
+                "GET /api/catalog: the ETag names the active dbVersion and emulates comes from it");
+            auto catalog = cli.Get("/api/catalog");
+            EXPECT(catalog && catalog->status == 200);
+            if (catalog) {
+                EXPECT(catalog->get_header_value("ETag").find("+db1\"") != std::string::npos);
+            }
+            g_controllerDbService = nullptr;
+        }
+
+        server.stop();
+        serverThread.join();
+        logWriter().stop();
+        g_configStore.reset();
+        home.cleanup();
+        return 0;
+    });
 }

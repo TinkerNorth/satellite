@@ -545,34 +545,26 @@ void test_theHotFieldsTakeNoLockAndASnapshotTakesOnlyTheSnapshotLock() {
 } // namespace
 
 int main() {
-    test_anOldSnapshotIsUnchangedByLaterUpdates();
-    test_updateReturnsTheSnapshotItPublished();
-    test_aNoChangeUpdatePublishesAndPersistsNothing();
-    test_aMutateMayReadTheStoreItIsUpdating();
-    test_readersNeverSeeATornSnapshot();
-    test_concurrentUpdatesAreNeverLost();
-    test_aBurstOfUpdatesIsCoalescedAndTheLastOneWins();
-    test_theSaveWaitsForTheBurstToSettleOnItsOwn();
-    test_flushReturnsOnceTheGenerationBeforeItIsPersisted();
-    test_flushGivesUpAtItsDeadlineWhilePersistIsBlocked();
-    test_anUpdateDuringASlowPersistIsPersistedNext();
-    test_aFailingPersistIsRetriedAndTheNextSaveCarriesTheLatest();
-    test_theAudioPolicyFollowsUpdates();
-    test_stopFlushesThenJoins();
-    test_destroyingTheStoreFlushesIt();
-    test_aStopThatCannotPersistGivesUpInsteadOfHanging();
+    return satellite::test::runMain("test_config_store", [] {
+        test_anOldSnapshotIsUnchangedByLaterUpdates();
+        test_updateReturnsTheSnapshotItPublished();
+        test_aNoChangeUpdatePublishesAndPersistsNothing();
+        test_aMutateMayReadTheStoreItIsUpdating();
+        test_readersNeverSeeATornSnapshot();
+        test_concurrentUpdatesAreNeverLost();
+        test_aBurstOfUpdatesIsCoalescedAndTheLastOneWins();
+        test_theSaveWaitsForTheBurstToSettleOnItsOwn();
+        test_flushReturnsOnceTheGenerationBeforeItIsPersisted();
+        test_flushGivesUpAtItsDeadlineWhilePersistIsBlocked();
+        test_anUpdateDuringASlowPersistIsPersistedNext();
+        test_aFailingPersistIsRetriedAndTheNextSaveCarriesTheLatest();
+        test_theAudioPolicyFollowsUpdates();
+        test_stopFlushesThenJoins();
+        test_destroyingTheStoreFlushesIt();
+        test_aStopThatCannotPersistGivesUpInsteadOfHanging();
 #ifdef SATELLITE_LOCK_STATS
-    test_persistRunsOnTheSaverThreadHoldingNoLock();
-    test_theHotFieldsTakeNoLockAndASnapshotTakesOnlyTheSnapshotLock();
+        test_persistRunsOnTheSaverThreadHoldingNoLock();
+        test_theHotFieldsTakeNoLockAndASnapshotTakesOnlyTheSnapshotLock();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    });
 }

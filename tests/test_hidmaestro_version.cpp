@@ -447,24 +447,23 @@ static void test_the_log_names_what_the_section_holds() {
 }
 
 int main() {
-    test_the_pinned_image_decodes_field_for_field();
-    test_each_field_comes_from_its_upstream_offset();
-    test_a_live_view_reads_as_its_bytes();
-    test_the_pins_are_driver_pins_h();
-    test_the_pinned_driver_is_written();
-    test_an_unverified_driver_that_serves_4_is_written_with_a_warning();
-    test_another_layout_is_refused_before_anything_else();
-    test_another_controllers_section_is_refused();
-    test_another_sdk_half_is_refused();
-    test_a_driver_that_failed_a_start_is_refused_before_its_range();
-    test_an_unwritten_driver_half_waits_then_refuses();
-    test_a_driver_that_does_not_serve_4_is_refused();
-    test_the_xusb_companion_is_judged_on_a_companion_profile();
-    test_a_composite_persona_has_no_driver_half();
-    test_a_section_opens_holds_or_refuses_its_pad();
-    test_the_hold_lasts_as_long_as_the_sdk_would_wait();
-    test_the_log_names_what_the_section_holds();
-
-    std::cout << "hidmaestro_version: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("hidmaestro_version", [] {
+        test_the_pinned_image_decodes_field_for_field();
+        test_each_field_comes_from_its_upstream_offset();
+        test_a_live_view_reads_as_its_bytes();
+        test_the_pins_are_driver_pins_h();
+        test_the_pinned_driver_is_written();
+        test_an_unverified_driver_that_serves_4_is_written_with_a_warning();
+        test_another_layout_is_refused_before_anything_else();
+        test_another_controllers_section_is_refused();
+        test_another_sdk_half_is_refused();
+        test_a_driver_that_failed_a_start_is_refused_before_its_range();
+        test_an_unwritten_driver_half_waits_then_refuses();
+        test_a_driver_that_does_not_serve_4_is_refused();
+        test_the_xusb_companion_is_judged_on_a_companion_profile();
+        test_a_composite_persona_has_no_driver_half();
+        test_a_section_opens_holds_or_refuses_its_pad();
+        test_the_hold_lasts_as_long_as_the_sdk_would_wait();
+        test_the_log_names_what_the_section_holds();
+    });
 }

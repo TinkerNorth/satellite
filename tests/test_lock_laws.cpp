@@ -1783,57 +1783,51 @@ bool waitNextDS4Notification(HANDLE, ULONG, HANDLE cancel, DS4_REQUEST_NOTIFICAT
 #endif
 
 int main() {
-    if (sodium_init() < 0) {
-        std::cerr << "sodium_init failed\n";
-        return 1;
-    }
-    ConfigSandbox sandbox;
-    if (!sandbox.ready()) {
-        std::cerr << "configPath() could not be pointed at a sandbox directory; refusing to run "
-                     "anything that saves the config\n";
-        return 1;
-    }
+    return satellite::test::runMain("test_lock_laws", []() -> int {
+        if (sodium_init() < 0) {
+            std::cerr << "sodium_init failed\n";
+            return 1;
+        }
+        ConfigSandbox sandbox;
+        if (!sandbox.ready()) {
+            std::cerr
+                << "configPath() could not be pointed at a sandbox directory; refusing to run "
+                   "anything that saves the config\n";
+            return 1;
+        }
 
-    lockstats::reset();
-    TEST("logger law: the log writer starts");
-    EXPECT(logWriter().start(std::make_unique<DiscardingLogSink>()));
-    LifecycleWatch watch;
-    WorkerCalls calls;
+        lockstats::reset();
+        TEST("logger law: the log writer starts");
+        EXPECT(logWriter().start(std::make_unique<DiscardingLogSink>()));
+        LifecycleWatch watch;
+        WorkerCalls calls;
 #ifdef _WIN32
-    timeBeginPeriod(1);
+        timeBeginPeriod(1);
 #endif
-    runTheServiceOnTheMockBackend(watch, sandbox, calls);
+        runTheServiceOnTheMockBackend(watch, sandbox, calls);
 #ifdef _WIN32
-    runTheServiceOnTheWindowsBackends(watch);
-    runTheTrayOnItsGuiThread();
-    timeEndPeriod(1);
+        runTheServiceOnTheWindowsBackends(watch);
+        runTheTrayOnItsGuiThread();
+        timeEndPeriod(1);
 #endif
-    g_configStore.reset();
-    logWriter().stop();
-    const lockstats::Snapshot snap = lockstats::snapshot();
-    report(snap);
+        g_configStore.reset();
+        logWriter().stop();
+        const lockstats::Snapshot snap = lockstats::snapshot();
+        report(snap);
 
-    TEST("stats: nothing overflowed the registry");
-    EXPECT_EQ(snap.overflows, 0u);
-    checkTheReceiveLaw(snap);
-    checkTheLifecycleLaw(watch, snap);
-    checkTheBlockingLaw(snap);
-    checkTheOrderLaw(snap);
-    checkTheDashboardLaw(snap);
-    checkTheLoggerLaw(snap);
-    checkThePointerLaw(snap, calls.mouse);
-    checkTheMicLaw(snap, calls.mic);
+        TEST("stats: nothing overflowed the registry");
+        EXPECT_EQ(snap.overflows, 0u);
+        checkTheReceiveLaw(snap);
+        checkTheLifecycleLaw(watch, snap);
+        checkTheBlockingLaw(snap);
+        checkTheOrderLaw(snap);
+        checkTheDashboardLaw(snap);
+        checkTheLoggerLaw(snap);
+        checkThePointerLaw(snap, calls.mouse);
+        checkTheMicLaw(snap, calls.mic);
 #ifdef _WIN32
-    checkTheTrayLaw();
+        checkTheTrayLaw();
 #endif
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        return 0;
+    });
 }

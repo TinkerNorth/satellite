@@ -758,19 +758,11 @@ void test_aLostPadWaitsOutATopologyChangeInFlight() {
 } // namespace
 
 int main() {
-    test_lifecycleCallsRunWithTheServiceLockFree();
-    test_coldDispatchNeverWaitsBehindAnotherSessionsPlug();
-    test_padKeepsSubmittingThroughItsSessionsControllerPlug();
-    test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne();
-    test_aLostPadWaitsOutATopologyChangeInFlight();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+    return satellite::test::runMain("test_session_topology", [] {
+        test_lifecycleCallsRunWithTheServiceLockFree();
+        test_coldDispatchNeverWaitsBehindAnotherSessionsPlug();
+        test_padKeepsSubmittingThroughItsSessionsControllerPlug();
+        test_putKeepsTheOldTokenThroughItsPlugThenTheNewOne();
+        test_aLostPadWaitsOutATopologyChangeInFlight();
+    });
 }

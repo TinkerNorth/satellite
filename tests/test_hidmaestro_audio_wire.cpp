@@ -299,19 +299,18 @@ static void test_oversized_sample_count_is_clamped() {
 }
 
 int main() {
-    test_layout_offsets();
-    test_write_read_round_trip();
-    test_negative_samples_survive();
-    test_in_order_stream();
-    test_capacity_guard();
-    test_lap_skip();
-    test_torn_write_rejected();
-    test_foreign_sequence_rejected();
-    test_head_advances_and_wraps_slots();
-    test_stream_sequence_wraps();
-    test_serial_is_carried_for_the_reader_to_check();
-    test_oversized_sample_count_is_clamped();
-
-    std::cout << "hidmaestro_audio_wire: " << g_pass << " passed, " << g_fail << " failed\n";
-    return g_fail == 0 ? 0 : 1;
+    return satellite::test::runMain("hidmaestro_audio_wire", [] {
+        test_layout_offsets();
+        test_write_read_round_trip();
+        test_negative_samples_survive();
+        test_in_order_stream();
+        test_capacity_guard();
+        test_lap_skip();
+        test_torn_write_rejected();
+        test_foreign_sequence_rejected();
+        test_head_advances_and_wraps_slots();
+        test_stream_sequence_wraps();
+        test_serial_is_carried_for_the_reader_to_check();
+        test_oversized_sample_count_is_clamped();
+    });
 }
