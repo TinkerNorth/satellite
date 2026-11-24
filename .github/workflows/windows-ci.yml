@@ -86,11 +86,25 @@ jobs:
       # scripts/build.ps1 / scripts/ci-local.ps1 run the identical build.
       - name: Configure (Release, preset windows-mingw)
         shell: msys2 {0}
-        run: cmake --preset windows-mingw
+        run: cmake --preset windows-mingw -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build
         shell: msys2 {0}
         run: cmake --build --preset windows-mingw -j "$(nproc)"
+
+      # Counting step while the clang-tidy 23 findings are fixed: the list
+      # goes to an artifact. It becomes the gate once the count is zero.
+      - name: clang-tidy findings (count)
+        run: |
+          bash scripts/check-tidy.sh build > tidy-windows.txt 2>&1 || echo "clang-tidy exit $?"
+          grep -cE '(warning|error):' tidy-windows.txt || true
+
+      - name: Upload the clang-tidy findings
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tidy-windows
+          path: tidy-windows.txt
+          retention-days: 7
 
       - name: Run tests
         shell: msys2 {0}
