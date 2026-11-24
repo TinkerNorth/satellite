@@ -3,6 +3,7 @@
 // Pure domain types: no Windows, Winsock, or platform gamepad headers.
 #pragma once
 
+#include "core/bits.h"
 #include "core/byte_order.h"
 
 #include "core/version.h"
@@ -768,9 +769,9 @@ inline const int TOUCHPAD_WIRE_PAYLOAD_BYTES_V2 = 18;
 inline TouchpadReport decodeTouchpadReportV1(const uint8_t* p) {
     TouchpadReport r;
     const uint8_t flags = p[0];
-    r.finger0.active = (flags & 0x01) != 0;
-    r.finger1.active = (flags & 0x02) != 0;
-    r.buttonPressed = (flags & 0x04) != 0;
+    r.finger0.active = satellite::bits::anySet(flags, 0x01U);
+    r.finger1.active = satellite::bits::anySet(flags, 0x02U);
+    r.buttonPressed = satellite::bits::anySet(flags, 0x04U);
     r.finger0.trackingId = p[1];
     r.finger0.x = satellite::readLE16s(p + 2);
     r.finger0.y = satellite::readLE16s(p + 4);
@@ -784,12 +785,12 @@ inline TouchpadReport decodeTouchpadReportV1(const uint8_t* p) {
 inline TouchpadReport decodeTouchpadReportV2(const uint8_t* p) {
     TouchpadReport r;
     const uint8_t fingers = p[0];
-    r.finger0.active = (fingers & 0x01) != 0;
-    r.finger1.active = (fingers & 0x02) != 0;
+    r.finger0.active = satellite::bits::anySet(fingers, 0x01U);
+    r.finger1.active = satellite::bits::anySet(fingers, 0x02U);
     const uint8_t buttons = p[1];
-    r.buttonPressed = (buttons & 0x01) != 0;
-    r.rightPressed = (buttons & 0x02) != 0;
-    r.middlePressed = (buttons & 0x04) != 0;
+    r.buttonPressed = satellite::bits::anySet(buttons, 0x01U);
+    r.rightPressed = satellite::bits::anySet(buttons, 0x02U);
+    r.middlePressed = satellite::bits::anySet(buttons, 0x04U);
     r.finger0.trackingId = p[2];
     r.finger0.x = satellite::readLE16s(p + 3);
     r.finger0.y = satellite::readLE16s(p + 5);
