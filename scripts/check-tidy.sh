@@ -34,8 +34,9 @@ python=python3
 command -v python3 >/dev/null 2>&1 || python=python
 # clang reads the build's own compile database, with two things only gcc
 # understands made clang's: -flto=<jobs> (clang takes -flto), and, for a MinGW
-# gcc, the include directory beside the compiler that gcc searches by itself
-# (MSYS2 keeps OpenSSL's headers there). The rewritten database goes in
+# gcc, the target and the MSYS2 prefix it lives in, so clang parses against
+# the same MinGW headers and libstdc++ the build compiled with rather than the
+# runner's MSVC ones. The rewritten database goes in
 # <build>/tidy; the list of first-party translation units comes back.
 tidydb="${build}/tidy"
 mkdir -p "${tidydb}"
@@ -53,8 +54,8 @@ for entry in json.load(open(sys.argv[1])):
     args = ["-flto" if re.fullmatch(r"-flto=.*", a) else a for a in args]
     compiler = args[0].replace("\\", "/")
     if "mingw" in compiler.lower():
-        include = os.path.normpath(os.path.join(os.path.dirname(compiler), "..", "include"))
-        args = args[:1] + ["-isystem", include] + args[1:]
+        sysroot = os.path.normpath(os.path.join(os.path.dirname(compiler), ".."))
+        args = args[:1] + ["--target=x86_64-w64-mingw32", "--sysroot=" + sysroot] + args[1:]
     kept.append({"directory": entry["directory"], "file": entry["file"], "arguments": args})
     if rel not in seen:
         seen.add(rel)
