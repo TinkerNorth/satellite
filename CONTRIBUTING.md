@@ -105,6 +105,19 @@ with every other third-party component in [`THIRD_PARTY.md`](THIRD_PARTY.md).
 - C++20, four-space indent, 100-column soft limit. The same `.clang-format`
   ships with `dish-android` (JNI), `dish-windows` and `dish-linux`; run
   `scripts/check-format.sh --fix` to format with the pinned clang-format.
+- Bitwise operators take unsigned operands only (clang-tidy's
+  `bugprone-signed-bitwise`). A `uint8_t` or `uint16_t` is promoted to `int`
+  before an operator sees it, so bytes widen through `bits::u32()` first,
+  shift counts and masks are unsigned literals (`8U`, `0xFFU`), a narrower
+  result is taken explicitly (`bits::lowByte`, `bits::low16`), and a signed
+  value is made last by a named conversion (`bits::asInt16`). The helpers,
+  and the multi-byte loads and stores built on them, are in `src/core/bits.h`
+  (the same helpers as the Dish clients' `Bits.h`):
+
+  ```cpp
+  const int16_t gyroX = bits::asInt16(bits::loadLe16(buf + 13));
+  const uint32_t pressed = bits::u32(buf[5]) & 0xF0U;
+  ```
 
 ### Comments: why, not what
 
