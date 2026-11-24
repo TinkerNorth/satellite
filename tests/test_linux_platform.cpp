@@ -639,33 +639,29 @@ static void testSwapScriptInstallsAfterProcessExits() {
 }
 
 int main() {
-    std::cout << "Running Linux platform tests...\n\n";
+    return satellite::test::runMain("test_linux_platform", [] {
+        std::cout << "Running Linux platform tests...\n\n";
 
-    testConfigEscapingRoundTrip();
-    testConfigPath();
-    testConfigDirOverride();
-    testAtomicWriteFile();
-    testConfigRoundTrip();
-    testDiscoveryBroadcastConfig();
-    testLoadConfigMissingFile();
-    testAutoStartEnable();
-    testAutoStartDisable();
-    testAutoStartIdempotent();
-    testGetExeDir();
-    testGetCurrentDate();
-    testFileLoggerFlush();
-    testLogDirDefault();
-    testSubmitBatteryWritesProxyFile();
-    testSubmitBatteryUnknownLevel();
-    testSetLightbarCallbackWritesProxyFile();
-    testSysfsProxyDirEnvOverride();
-    testNetlinkBatchWantsRejoin();
-    testSwapScriptSparesLiveProcess();
-    testSwapScriptInstallsAfterProcessExits();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    std::cout << "  STATUS: " << (g_fail == 0 ? "ALL PASSED" : "FAILED") << "\n";
-    return g_fail == 0 ? 0 : 1;
+        testConfigEscapingRoundTrip();
+        testConfigPath();
+        testConfigDirOverride();
+        testAtomicWriteFile();
+        testConfigRoundTrip();
+        testDiscoveryBroadcastConfig();
+        testLoadConfigMissingFile();
+        testAutoStartEnable();
+        testAutoStartDisable();
+        testAutoStartIdempotent();
+        testGetExeDir();
+        testGetCurrentDate();
+        testFileLoggerFlush();
+        testLogDirDefault();
+        testSubmitBatteryWritesProxyFile();
+        testSubmitBatteryUnknownLevel();
+        testSetLightbarCallbackWritesProxyFile();
+        testSysfsProxyDirEnvOverride();
+        testNetlinkBatchWantsRejoin();
+        testSwapScriptSparesLiveProcess();
+        testSwapScriptInstallsAfterProcessExits();
+    });
 }

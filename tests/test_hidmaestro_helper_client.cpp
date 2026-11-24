@@ -1428,57 +1428,49 @@ static void test_the_connect_ahead_takes_no_lock() {
 #endif
 
 int main() {
-    test_every_pipe_wait_is_bounded_at_ten_seconds();
-    test_each_request_carries_its_own_limit();
-    test_a_reply_that_arrives_whole_costs_one_read();
-    test_a_reply_names_where_the_frames_go();
-    test_a_reply_hands_over_the_version_section();
-    test_the_hello_offers_the_device_watch();
-    test_a_plug_on_the_watch_protocol_hands_over_its_block();
-    test_a_helper_that_predates_the_watch_stays_on_the_base_protocol();
-    test_a_lost_pads_unplug_answered_at_once_is_confirmed();
-    test_a_second_lost_unplug_does_not_wait_behind_the_first();
-    test_a_pad_whose_helper_stopped_is_let_go_without_asking_it();
-    test_a_requested_unplug_that_fails_is_settled_by_the_next_helper_too();
-    test_a_pad_of_a_replaced_helper_never_touches_the_new_one();
-    test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces();
-    test_a_carriage_return_before_the_line_feed_is_part_of_the_framing();
-    test_a_reply_with_no_end_is_refused_at_the_size_limit();
-    test_a_silent_helper_fails_the_call_at_the_deadline();
-    test_a_half_line_is_not_a_reply();
-    test_the_deadline_covers_the_whole_reply();
-    test_a_slow_first_provision_succeeds_within_its_limit();
-    test_a_plug_that_stalls_still_fails_at_its_limit();
-    test_hello_and_shutdown_keep_the_short_bound_beside_a_long_plug();
-    test_a_shutdown_waits_for_the_helpers_removals();
-    test_a_shutdown_is_sent_behind_an_owed_answer();
-    test_a_shutdown_waits_as_its_helpers_timeout_scale_says();
-    test_an_exit_never_outlasts_a_relaunchs_wait();
-    test_a_client_unplug_behind_an_owed_answer_is_sent_and_confirmed();
-    test_a_plug_behind_an_owed_answer_is_sent_and_succeeds();
-    test_a_stalled_helper_costs_a_plug_one_budget();
-    test_an_answer_that_lands_during_the_cancel_is_kept();
-    test_a_slow_launch_connect_succeeds_within_its_limit();
-    test_a_launch_that_never_connects_fails_at_its_limit();
-    test_a_connection_made_ahead_serves_the_first_plug();
-    test_the_connection_ahead_never_takes_the_elevation_prompt();
-    test_a_plug_that_arrives_mid_connect_waits_for_it();
-    test_one_connect_at_a_time_and_none_when_a_channel_is_up();
-    test_a_connection_that_died_while_idle_is_not_used();
-    test_shutdown_does_not_wait_out_a_connect_in_flight();
-    test_a_driver_install_starts_the_connect();
+    return satellite::test::runMain("test_hidmaestro_helper_client", [] {
+        test_every_pipe_wait_is_bounded_at_ten_seconds();
+        test_each_request_carries_its_own_limit();
+        test_a_reply_that_arrives_whole_costs_one_read();
+        test_a_reply_names_where_the_frames_go();
+        test_a_reply_hands_over_the_version_section();
+        test_the_hello_offers_the_device_watch();
+        test_a_plug_on_the_watch_protocol_hands_over_its_block();
+        test_a_helper_that_predates_the_watch_stays_on_the_base_protocol();
+        test_a_lost_pads_unplug_answered_at_once_is_confirmed();
+        test_a_second_lost_unplug_does_not_wait_behind_the_first();
+        test_a_pad_whose_helper_stopped_is_let_go_without_asking_it();
+        test_a_requested_unplug_that_fails_is_settled_by_the_next_helper_too();
+        test_a_pad_of_a_replaced_helper_never_touches_the_new_one();
+        test_a_reply_costs_no_more_reads_than_it_arrives_in_pieces();
+        test_a_carriage_return_before_the_line_feed_is_part_of_the_framing();
+        test_a_reply_with_no_end_is_refused_at_the_size_limit();
+        test_a_silent_helper_fails_the_call_at_the_deadline();
+        test_a_half_line_is_not_a_reply();
+        test_the_deadline_covers_the_whole_reply();
+        test_a_slow_first_provision_succeeds_within_its_limit();
+        test_a_plug_that_stalls_still_fails_at_its_limit();
+        test_hello_and_shutdown_keep_the_short_bound_beside_a_long_plug();
+        test_a_shutdown_waits_for_the_helpers_removals();
+        test_a_shutdown_is_sent_behind_an_owed_answer();
+        test_a_shutdown_waits_as_its_helpers_timeout_scale_says();
+        test_an_exit_never_outlasts_a_relaunchs_wait();
+        test_a_client_unplug_behind_an_owed_answer_is_sent_and_confirmed();
+        test_a_plug_behind_an_owed_answer_is_sent_and_succeeds();
+        test_a_stalled_helper_costs_a_plug_one_budget();
+        test_an_answer_that_lands_during_the_cancel_is_kept();
+        test_a_slow_launch_connect_succeeds_within_its_limit();
+        test_a_launch_that_never_connects_fails_at_its_limit();
+        test_a_connection_made_ahead_serves_the_first_plug();
+        test_the_connection_ahead_never_takes_the_elevation_prompt();
+        test_a_plug_that_arrives_mid_connect_waits_for_it();
+        test_one_connect_at_a_time_and_none_when_a_channel_is_up();
+        test_a_connection_that_died_while_idle_is_not_used();
+        test_shutdown_does_not_wait_out_a_connect_in_flight();
+        test_a_driver_install_starts_the_connect();
 #ifdef SATELLITE_LOCK_STATS
-    test_the_connect_ahead_takes_no_lock();
+        test_the_connect_ahead_takes_no_lock();
 #endif
-    test_the_shipped_limits_hold_in_real_time();
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        test_the_shipped_limits_hold_in_real_time();
+    });
 }

@@ -767,40 +767,32 @@ static void test_extended_buttons_never_reach_the_driver() {
 }
 
 int main() {
-    std::cout << "=== test_vigem_adapter ===\n";
+    return satellite::test::runMain("test_vigem_adapter", [] {
+        std::cout << "=== test_vigem_adapter ===\n";
 
-    test_ds4_plugin_probes_ex_and_reports_sink_ok();
-    test_ds4_ex_rejected_falls_back_and_reports_no_sink();
-    test_ds4_ex_accepted_uses_ex_path();
-    test_motion_backend_ok_nonds4_and_unplugged();
-    test_xbox_uses_synchronous_xusb_submit();
-    test_submit_to_unplugged_serial_is_rejected();
-    test_xusb_to_ds4_conversion_maps_input();
-    test_ds4_report_is_the_shared_sony_layout();
-    test_extended_buttons_never_reach_the_driver();
+        test_ds4_plugin_probes_ex_and_reports_sink_ok();
+        test_ds4_ex_rejected_falls_back_and_reports_no_sink();
+        test_ds4_ex_accepted_uses_ex_path();
+        test_motion_backend_ok_nonds4_and_unplugged();
+        test_xbox_uses_synchronous_xusb_submit();
+        test_submit_to_unplugged_serial_is_rejected();
+        test_xusb_to_ds4_conversion_maps_input();
+        test_ds4_report_is_the_shared_sony_layout();
+        test_extended_buttons_never_reach_the_driver();
 
-    test_ds4ExSubmitLanded_overlapped_success_always_lands();
-    test_ds4ExSubmitLanded_benign_failures_still_land();
-    test_ds4ExSubmitLanded_real_failures_do_not_land();
-    test_ds4_ex_struct_abi();
-    test_every_ioctl_is_a_code_the_driver_dispatches();
-    test_xusb_rumble_forwards_the_large_motor_as_strong();
-    test_ds4_feedback_forwards_the_large_motor_as_strong_and_the_colour();
-    test_motion_submit_lands_on_ex_when_supported();
-    test_motion_submit_not_delivered_when_ex_unsupported();
-    test_motion_submit_rejected_for_xbox_and_unplugged();
-    test_plugged_pad_answers_while_another_plugs(GamepadIdentity::Xbox, GamepadIdentity::DS4);
-    test_plugged_pad_answers_while_another_plugs(GamepadIdentity::DS4, GamepadIdentity::Xbox);
-    test_plugged_pad_answers_while_another_unplugs(GamepadIdentity::Xbox, GamepadIdentity::DS4);
-    test_plugged_pad_answers_while_another_unplugs(GamepadIdentity::DS4, GamepadIdentity::Xbox);
-
-    std::cout << "\n=== Test Results ===\n";
-    std::cout << "  Passed: " << g_pass << "\n";
-    std::cout << "  Failed: " << g_fail << "\n";
-    if (g_fail > 0) {
-        std::cout << "  STATUS: FAIL\n";
-        return 1;
-    }
-    std::cout << "  STATUS: ALL PASSED\n";
-    return 0;
+        test_ds4ExSubmitLanded_overlapped_success_always_lands();
+        test_ds4ExSubmitLanded_benign_failures_still_land();
+        test_ds4ExSubmitLanded_real_failures_do_not_land();
+        test_ds4_ex_struct_abi();
+        test_every_ioctl_is_a_code_the_driver_dispatches();
+        test_xusb_rumble_forwards_the_large_motor_as_strong();
+        test_ds4_feedback_forwards_the_large_motor_as_strong_and_the_colour();
+        test_motion_submit_lands_on_ex_when_supported();
+        test_motion_submit_not_delivered_when_ex_unsupported();
+        test_motion_submit_rejected_for_xbox_and_unplugged();
+        test_plugged_pad_answers_while_another_plugs(GamepadIdentity::Xbox, GamepadIdentity::DS4);
+        test_plugged_pad_answers_while_another_plugs(GamepadIdentity::DS4, GamepadIdentity::Xbox);
+        test_plugged_pad_answers_while_another_unplugs(GamepadIdentity::Xbox, GamepadIdentity::DS4);
+        test_plugged_pad_answers_while_another_unplugs(GamepadIdentity::DS4, GamepadIdentity::Xbox);
+    });
 }
