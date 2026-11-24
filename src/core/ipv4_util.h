@@ -6,6 +6,8 @@
 // UDP packet), so kept tiny and allocation-free.
 #pragma once
 
+#include "core/bits.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -45,10 +47,10 @@ inline uint32_t parseIPv4Nbo(const std::string& s) {
 // Format a NETWORK-byte-order uint32 as "a.b.c.d". <=15 chars, so SSO means no
 // heap touch.
 inline std::string formatIPv4Nbo(uint32_t nbo) {
-    const uint8_t a = static_cast<uint8_t>(nbo & 0xFF);
-    const uint8_t b = static_cast<uint8_t>((nbo >> 8U) & 0xFF);
-    const uint8_t c = static_cast<uint8_t>((nbo >> 16U) & 0xFF);
-    const uint8_t d = static_cast<uint8_t>((nbo >> 24U) & 0xFF);
+    const uint8_t a = bits::byteOf(nbo, 0U);
+    const uint8_t b = bits::byteOf(nbo, 1U);
+    const uint8_t c = bits::byteOf(nbo, 2U);
+    const uint8_t d = bits::byteOf(nbo, 3U);
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
     return std::string(buf);

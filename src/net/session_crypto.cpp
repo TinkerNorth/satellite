@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "session_crypto.h"
+#include "core/bits.h"
 
 #include <sodium.h>
 
 #include <cstring>
+
+namespace bits = satellite::bits;
 
 namespace {
 
@@ -68,7 +71,7 @@ bool verifyHmacProof(const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::strin
         int hi = hexNibbleAt(proofHex[i * 2]);
         int lo = hexNibbleAt(proofHex[i * 2 + 1]);
         if (hi < 0 || lo < 0) return false;
-        supplied[i] = static_cast<uint8_t>((hi << 4) | lo);
+        supplied[i] = bits::fromNibbles(static_cast<uint8_t>(hi), static_cast<uint8_t>(lo));
     }
     const std::string msg = "satellite-proof:" + deviceId;
     uint8_t expected[crypto_auth_hmacsha256_BYTES];

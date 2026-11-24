@@ -3,6 +3,7 @@
 
 #include "core/touchpad_codec.h"
 #include "core/types.h"
+#include "core/bits.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -18,6 +19,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+namespace bits = satellite::bits;
 
 // Forward-declared to avoid pulling app/app_state.h (httplib + net_compat.h)
 // into this TU. Defined in platform/linux/globals.cpp.
@@ -674,7 +677,8 @@ bool GamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport& repor
             // Fresh tracking id on touch-down, reused for the contact's life so
             // MT-B consumers see one continuous finger.
             if (dev.touchSlotId[slot] < 0) {
-                dev.touchSlotId[slot] = (dev.touchTrackingId++) & 0xFFFF;
+                dev.touchSlotId[slot] =
+                    bits::asInt32(bits::asUint32(dev.touchTrackingId++) & 0xFFFFU);
             }
             ok &= emit(fd, EV_ABS, ABS_MT_TRACKING_ID, dev.touchSlotId[slot]);
             ok &= emit(fd, EV_ABS, ABS_MT_POSITION_X, touchpadWireToRange(f.x, DS4_TOUCHPAD_RES_X));
@@ -823,7 +827,9 @@ void GamepadAdapter::startReader(uint32_t serial, Device& dev) {
     // Non-blocking read side so a spurious wake (write side closed without a
     // byte) doesn't stall the reader.
     int flags = ::fcntl(fds[0], F_GETFL, 0);
-    if (flags >= 0) ::fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+    if (flags >= 0) {
+        ::fcntl(fds[0], F_SETFL, bits::asInt32(bits::asUint32(flags) | bits::asUint32(O_NONBLOCK)));
+    }
     dev.wakePipeRead = fds[0];
     dev.wakePipeWrite = fds[1];
     dev.readerRunning.store(true, std::memory_order_release);
@@ -918,8 +924,11 @@ void GamepadAdapter::readerLoop(uint32_t serial, int fd, int wakeFd) {
             if (errno == EINTR) continue;
             return;
         }
-        if (pfds[1].revents & POLLIN) return; // unplug / closeBus
-        if (!(pfds[0].revents & POLLIN)) continue;
+        const uint32_t pollIn = bits::asUint32(POLLIN);
+        if (bits::anySet(bits::u32(static_cast<uint16_t>(pfds[1].revents)), pollIn)) {
+            return; // unplug / closeBus
+        }
+        if (!bits::anySet(bits::u32(static_cast<uint16_t>(pfds[0].revents)), pollIn)) continue;
 
         struct input_event ev{};
         const ssize_t n = ::read(fd, &ev, sizeof(ev));

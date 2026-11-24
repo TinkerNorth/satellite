@@ -5,6 +5,8 @@
 // seen first; otherwise <windows.h> auto-pulls winsock1.
 #pragma once
 
+#include "core/bits.h"
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -60,7 +62,9 @@ inline bool netSetNonBlocking(SOCKET s, bool nonblock) {
 #else
     int flags = ::fcntl(s, F_GETFL, 0);
     if (flags < 0) return false;
-    flags = nonblock ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+    const uint32_t bitsNow = satellite::bits::asUint32(flags);
+    const uint32_t nonBlockBit = satellite::bits::asUint32(O_NONBLOCK);
+    flags = satellite::bits::asInt32(nonblock ? (bitsNow | nonBlockBit) : (bitsNow & ~nonBlockBit));
     return ::fcntl(s, F_SETFL, flags) == 0;
 #endif
 }

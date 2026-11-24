@@ -225,7 +225,7 @@ static void netinfoRoute(const Request&, Response& res) {
         info.device = bound.name;
         info.category = bound.category;
     }
-    int ruleMask = 0;
+    uint32_t ruleMask = 0;
     bool haveRule = false;
     if (selfInboundFirewallRules(ruleMask, haveRule)) {
         info.firewallSupported = true;

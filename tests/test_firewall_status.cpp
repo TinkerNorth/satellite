@@ -56,7 +56,7 @@ int main() {
 
     {
         TEST("an all-profiles rule mask (domain|private|public) covers any active profile");
-        const int all = fw::PROFILE_DOMAIN | fw::PROFILE_PRIVATE | fw::PROFILE_PUBLIC;
+        const uint32_t all = fw::PROFILE_DOMAIN | fw::PROFILE_PRIVATE | fw::PROFILE_PUBLIC;
         EXPECT(fw::evaluateFirewall(fw::PROFILE_PRIVATE, all, true) ==
                fw::FirewallState::Configured);
         EXPECT(fw::evaluateFirewall(fw::PROFILE_PUBLIC, all, true) ==

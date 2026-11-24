@@ -9,6 +9,7 @@
 // helpers live in net/pin_rotation.cpp.
 #include "crypto.h"
 #include "config.h"
+#include "core/bits.h"
 
 #include <sodium.h>
 
@@ -19,20 +20,26 @@
 #include <cerrno>
 #include <cstring>
 
+namespace bits = satellite::bits;
+
 static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static std::string base64Encode(const std::vector<uint8_t>& data) {
     std::string out;
-    int val = 0, bits = -6;
+    // Only the low 14 bits of the accumulator are ever read, so it may wrap.
+    uint32_t val = 0;
+    int pending = -6;
     for (uint8_t c : data) {
-        val = (val << 8) + c;
-        bits += 8;
-        while (bits >= 0) {
-            out.push_back(b64chars[(val >> bits) & 0x3F]);
-            bits -= 6;
+        val = (val << 8U) | bits::u32(c);
+        pending += 8;
+        while (pending >= 0) {
+            out.push_back(b64chars[(val >> static_cast<unsigned>(pending)) & 0x3FU]);
+            pending -= 6;
         }
     }
-    if (bits > -6) out.push_back(b64chars[((val << 8) >> (bits + 8)) & 0x3F]);
+    if (pending > -6) {
+        out.push_back(b64chars[((val << 8U) >> static_cast<unsigned>(pending + 8)) & 0x3FU]);
+    }
     while (out.size() % 4) out.push_back('=');
     return out;
 }
@@ -41,14 +48,16 @@ static std::vector<uint8_t> base64Decode(const std::string& s) {
     std::vector<int> T(256, -1);
     for (int i = 0; i < 64; i++) T[(int)b64chars[i]] = i;
     std::vector<uint8_t> out;
-    int val = 0, bits = -8;
+    // Only the low 12 bits of the accumulator are ever read, so it may wrap.
+    uint32_t val = 0;
+    int pending = -8;
     for (char c : s) {
         if (T[(unsigned char)c] == -1) break;
-        val = (val << 6) + T[(unsigned char)c];
-        bits += 6;
-        if (bits >= 0) {
-            out.push_back((uint8_t)(val >> bits));
-            bits -= 8;
+        val = (val << 6U) | static_cast<uint32_t>(T[(unsigned char)c]);
+        pending += 6;
+        if (pending >= 0) {
+            out.push_back(bits::lowByte(val >> static_cast<unsigned>(pending)));
+            pending -= 8;
         }
     }
     return out;

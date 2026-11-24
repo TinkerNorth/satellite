@@ -239,7 +239,7 @@ inline void handleDatagram(SessionService& svc, uint8_t* buf, int n, const socka
     if (dr.wasGamepadData) recordGamepadLoop(t0, dr.gamepadOk, localMaxUs);
 
     g_packetCount.fetch_add(1, std::memory_order_relaxed);
-    if ((g_packetCount.load(std::memory_order_relaxed) & 0xFF) == 0) {
+    if ((g_packetCount.load(std::memory_order_relaxed) & 0xFFU) == 0U) {
         g_senderIP.store(senderIPv4);
     }
 }

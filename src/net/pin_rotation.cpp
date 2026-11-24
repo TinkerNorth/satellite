@@ -11,6 +11,7 @@
 // to every platform's test build.
 #include "pin_rotation.h"
 #include "core/tracked_mutex.h"
+#include "core/bits.h"
 
 #include <sodium.h>
 
@@ -18,6 +19,8 @@
 #include <cstring>
 #include <mutex>
 #include <vector>
+
+namespace bits = satellite::bits;
 
 std::string randomHex(int bytes) {
     if (bytes <= 0) return std::string();
@@ -124,7 +127,7 @@ bool hexDecode(const std::string& hex, uint8_t* out, size_t outLen) {
         int hi = hexNibble(hex[i * 2]);
         int lo = hexNibble(hex[i * 2 + 1]);
         if (hi < 0 || lo < 0) return false;
-        out[i] = static_cast<uint8_t>((hi << 4) | lo);
+        out[i] = bits::fromNibbles(static_cast<uint8_t>(hi), static_cast<uint8_t>(lo));
     }
     return true;
 }

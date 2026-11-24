@@ -6,6 +6,7 @@
 #include "mac_hid_gamepad_adapter.h"
 
 #include "core/ds4_report.h"
+#include "core/bits.h"
 
 #include <atomic>
 #include <chrono>
@@ -28,6 +29,8 @@
 #include <IOKit/hid/IOHIDUsageTables.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
+
+namespace bits = satellite::bits;
 
 namespace {
 
@@ -405,7 +408,7 @@ bool MacHidGamepadAdapter::submitLocked(Slot& slot) {
     slot.lastSubmit = now;
 
     ds4PackInputReport(slot.state, slot.buf);
-    slot.state.frameCounter = static_cast<uint8_t>((slot.state.frameCounter + 1) & 0x3F);
+    slot.state.frameCounter = bits::lowByte((bits::u32(slot.state.frameCounter) + 1U) & 0x3FU);
 
     const IOReturn ret = IOHIDUserDeviceHandleReportWithTimeStamp(
         slot.device, mach_absolute_time(), slot.buf, DS4V2_INPUT_REPORT_BYTES);
@@ -468,10 +471,10 @@ bool MacHidGamepadAdapter::submitTouchpad(uint32_t serial, const TouchpadReport&
     // Fresh tracking id on each up->down transition so consumers read a new
     // contact rather than a teleporting drag (same policy as ViGEm/uinput).
     if (report.finger0.active && !st.finger0.active) {
-        st.touchTrackingId0 = static_cast<uint8_t>((st.touchTrackingId0 + 1) & 0x7F);
+        st.touchTrackingId0 = bits::lowByte((bits::u32(st.touchTrackingId0) + 1U) & 0x7FU);
     }
     if (report.finger1.active && !st.finger1.active) {
-        st.touchTrackingId1 = static_cast<uint8_t>((st.touchTrackingId1 + 1) & 0x7F);
+        st.touchTrackingId1 = bits::lowByte((bits::u32(st.touchTrackingId1) + 1U) & 0x7FU);
     }
     st.finger0 = report.finger0;
     st.finger1 = report.finger1;
