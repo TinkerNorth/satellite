@@ -706,7 +706,7 @@ static void mirrorStringsRoute(const Request& req, Response& res) {
 
 static void catalogImageRoute(const Request& req, Response& res) {
     const std::string slug = req.matches[1].str();
-    const auto slugs = satellite::catalogImageSlugs();
+    const auto& slugs = satellite::catalogImageSlugs();
     const bool known = std::find(slugs.begin(), slugs.end(), slug) != slugs.end();
     const std::string svg = known ? readFile(g_webDir + "/img/catalog/" + slug + ".svg") : "";
     if (svg.empty()) {

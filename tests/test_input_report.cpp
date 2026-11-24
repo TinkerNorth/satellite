@@ -5,11 +5,13 @@
 #include "../src/net/inner_dispatch.h"
 #include "../src/core/session_service.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -110,9 +112,12 @@ struct OnePadSession {
     }
 
     DispatchResult dispatch(const std::vector<uint8_t>& frame) {
-        std::vector<uint8_t> tight(frame);
-        return dispatchInnerMessage(svc, opened.token, MSG_GAMEPAD_DATA, tight.data(),
-                                    static_cast<uint16_t>(tight.size()));
+        // A heap copy exactly the frame's size, so a read past its end is a sanitizer
+        // finding rather than a read of the vector's spare capacity.
+        const auto tight = std::make_unique<uint8_t[]>(frame.size());
+        std::copy(frame.begin(), frame.end(), tight.get());
+        return dispatchInnerMessage(svc, opened.token, MSG_GAMEPAD_DATA, tight.get(),
+                                    static_cast<uint16_t>(frame.size()));
     }
 };
 

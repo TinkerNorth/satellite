@@ -225,8 +225,12 @@ void addTrayIcon() {
 // before touching AppKit; the notification carries the deviceId so the click
 // handler can re-snapshot and prompt.
 void notifyPairRequestMac(const std::string& deviceId) {
-    std::string devCopy = deviceId;
+    // The block outlives the caller's string; an NSString is what it retains. A
+    // deviceId that is not UTF-8 could not ride in the notification's userInfo.
+    NSString* devId = [NSString stringWithUTF8String:deviceId.c_str()];
+    if (devId == nil) return;
     dispatch_async(dispatch_get_main_queue(), ^{
+      const std::string devCopy = devId.UTF8String;
       std::string name, ip, pin;
       int secs = 0;
       if (!pairRequestSnapshot(devCopy, name, ip, pin, secs)) return;
@@ -237,7 +241,7 @@ void notifyPairRequestMac(const std::string& deviceId) {
       content.body =
           [NSString stringWithFormat:@"%s (%s) wants to pair. Click to accept or reject.",
                                      name.empty() ? "A device" : name.c_str(), ip.c_str()];
-      content.userInfo = @{@"deviceId" : [NSString stringWithUTF8String:devCopy.c_str()]};
+      content.userInfo = @{@"deviceId" : devId};
       // No trigger: deliver now.
       UNNotificationRequest* request =
           [UNNotificationRequest requestWithIdentifier:pairNotificationIdentifier(devCopy)

@@ -931,8 +931,7 @@ static void test_compareRecordSets_identicalSetsAreEqual() {
         makeProbeRec("h.local.", mdns::TYPE_A, mdns::CLASS_IN, {10, 0, 0, 1}),
         makeProbeRec("h._s._udp.local.", mdns::TYPE_TXT, mdns::CLASS_IN, {0}),
     };
-    std::vector<mdns::ProbeRecord> b = a; // identical
-    EXPECT_EQ(mdns::compareRecordSets(a, b), 0);
+    EXPECT_EQ(mdns::compareRecordSets(a, a), 0); // each side is its own copy
 }
 
 static void test_compareRecordSets_weWinOnGreaterRdataByte() {

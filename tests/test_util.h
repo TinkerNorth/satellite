@@ -91,19 +91,24 @@ inline void removeTestDir(const std::filesystem::path& dir) noexcept {
         }                                                                                          \
     } while (0)
 
-#define EXPECT_EQ(a, b)                                                                            \
-    do {                                                                                           \
-        auto _a = (a);                                                                             \
-        auto _b = (b);                                                                             \
-        if (_a == _b) {                                                                            \
-            g_pass++;                                                                              \
-        } else {                                                                                   \
-            g_fail++;                                                                              \
-            std::cerr << "  FAIL [" << g_currentTest << "] " << __FILE__ << ":" << __LINE__        \
-                      << "  " << #a << " == " << #b << "  (got ";                                  \
-            satellite::test::streamValue(std::cerr, _a);                                           \
-            std::cerr << " vs ";                                                                   \
-            satellite::test::streamValue(std::cerr, _b);                                           \
-            std::cerr << ")\n";                                                                    \
-        }                                                                                          \
-    } while (0)
+// Both sides bind to the parameters for the whole expression, so a temporary (or a member of
+// one) is compared without a copy and without dangling.
+namespace satellite::test {
+template <typename A, typename B>
+void expectEq(const A& a, const B& b, const char* aText, const char* bText, const char* file,
+              int line) {
+    if (a == b) {
+        g_pass++;
+        return;
+    }
+    g_fail++;
+    std::cerr << "  FAIL [" << g_currentTest << "] " << file << ":" << line << "  " << aText
+              << " == " << bText << "  (got ";
+    streamValue(std::cerr, a);
+    std::cerr << " vs ";
+    streamValue(std::cerr, b);
+    std::cerr << ")\n";
+}
+} // namespace satellite::test
+
+#define EXPECT_EQ(a, b) satellite::test::expectEq((a), (b), #a, #b, __FILE__, __LINE__)
