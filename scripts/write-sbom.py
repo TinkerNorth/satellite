@@ -13,8 +13,10 @@ What each lane names:
 
   every lane   cpp-httplib and nlohmann/json, compiled in from lib/ at the
                versions their headers state (lib/VENDORED.md pins them);
-               sentry-native with --sentry (a release build with a DSN)
-  windows      every port vcpkg resolved, from the vcpkg.spdx.json vcpkg
+               sentry-native with --sentry (a Linux or macOS release build
+               with a DSN)
+  windows      every port vcpkg resolved for the target triplet, sentry-native
+               and its Crashpad among them, from the vcpkg.spdx.json vcpkg
                writes for it under <vcpkg_installed>/<triplet>/share/<port>/;
                HIDMaestro and ViGEmBus at driver_pins.h's versions, and the
                usbip-win2 driver HIDMaestro embeds; the ViGEm client headers
@@ -138,12 +140,12 @@ def add_sentry(doc):
             purl=f"pkg:github/getsentry/sentry-native@{version}")
 
 
-def add_windows(doc, vcpkg_installed):
+def add_windows(doc, vcpkg_installed, triplet):
     found = 0
-    for triplet in sorted(os.listdir(vcpkg_installed)):
-        share = os.path.join(vcpkg_installed, triplet, "share")
-        if not os.path.isdir(share):
-            continue
+    # The target triplet only: the host triplet holds build tools (pkgconf)
+    # that run during the build and ship in nothing.
+    share = os.path.join(vcpkg_installed, triplet, "share")
+    if os.path.isdir(share):
         for port in sorted(os.listdir(share)):
             spdx = os.path.join(share, port, "vcpkg.spdx.json")
             if not os.path.isfile(spdx):
@@ -154,9 +156,9 @@ def add_windows(doc, vcpkg_installed):
             # (with the port revision after a #) are what was built.
             described = data["packages"][0]
             name = described["name"]
-            if name.startswith("vcpkg-") or name == "sentry-native":
-                # Build helpers ship nothing; sentry-native is named once below
-                # when the build carries a DSN.
+            if name.startswith("vcpkg-") or name.lower() == "satellite":
+                # Build helpers ship nothing; the project's own manifest is
+                # the satellite package above.
                 continue
             version = described.get("versionInfo", "NOASSERTION")
             license_id = described.get("licenseConcluded") or described.get("licenseDeclared") or "NOASSERTION"
@@ -212,6 +214,7 @@ def main():
     parser.add_argument("--lane", required=True, choices=["windows", "appimage", "deb", "rpm", "macos"])
     parser.add_argument("--out", required=True)
     parser.add_argument("--vcpkg-installed")
+    parser.add_argument("--triplet", default="x64-windows-static")
     parser.add_argument("--appdir")
     parser.add_argument("--sentry", action="store_true")
     args = parser.parse_args()
@@ -220,12 +223,14 @@ def main():
     doc.add("satellite", satellite_version(), "LGPL-3.0-or-later", "https://github.com/TinkerNorth/satellite",
             purl=f"pkg:github/TinkerNorth/satellite@{satellite_version()}", supplier="Organization: TinkerNorth")
     add_vendored(doc)
-    if args.sentry:
+    # The Windows build links sentry-native (and its Crashpad) from vcpkg
+    # whether or not it carries a DSN, and vcpkg's own document names it.
+    if args.sentry and args.lane != "windows":
         add_sentry(doc)
     if args.lane == "windows":
         if not args.vcpkg_installed:
             sys.exit("write-sbom: --lane windows needs --vcpkg-installed")
-        add_windows(doc, args.vcpkg_installed)
+        add_windows(doc, args.vcpkg_installed, args.triplet)
     elif args.lane == "appimage":
         if not args.appdir:
             sys.exit("write-sbom: --lane appimage needs --appdir")

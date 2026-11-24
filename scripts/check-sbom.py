@@ -34,7 +34,7 @@ NAMES = {
 
 EVERY_LANE = ["cpp-httplib", "nlohmann-json"]
 LANE = {
-    "windows": ["libsodium", "openssl", "opus", "HIDMaestro", "ViGEmBus", "usbip-win2", "ViGEmClient"],
+    "windows": ["libsodium", "openssl", "opus", "sentry-native", "HIDMaestro", "ViGEmBus", "usbip-win2", "ViGEmClient"],
     "appimage": [],
     "deb": [],
     "rpm": [],
