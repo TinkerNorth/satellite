@@ -65,7 +65,7 @@ std::string computeHmacProof(const uint8_t pairingKey[CRYPTO_KEY_SIZE],
 
 bool verifyHmacProof(const uint8_t pairingKey[CRYPTO_KEY_SIZE], const std::string& deviceId,
                      const std::string& proofHex) {
-    if (proofHex.size() != crypto_auth_hmacsha256_BYTES * 2) return false;
+    if (proofHex.size() != size_t{crypto_auth_hmacsha256_BYTES} * 2) return false;
     uint8_t supplied[crypto_auth_hmacsha256_BYTES];
     for (size_t i = 0; i < sizeof(supplied); i++) {
         int hi = hexNibbleAt(proofHex[i * 2]);

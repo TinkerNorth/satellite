@@ -164,7 +164,7 @@ static void test_lap_skip() {
     EXPECT_EQ(pkt.seq, (uint16_t)(total - static_cast<int>(AUDIO_RING_SLOTS)));
 
     TEST("after the skip the remaining batches drain in order to the newest");
-    uint16_t expected = static_cast<uint16_t>(pkt.seq + 1);
+    auto expected = static_cast<uint16_t>(pkt.seq + 1);
     while (readNextAudioSlot(sec.data(), last, pkt)) {
         EXPECT_EQ(pkt.seq, expected);
         expected++;

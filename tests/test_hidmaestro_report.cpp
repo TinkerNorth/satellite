@@ -378,7 +378,7 @@ static void test_ds5_edge_payload() {
     std::set<size_t> fixedBytes;
     for (const auto& entry : defaults) {
         const size_t payloadByte = entry.at("byte").get<size_t>() - EDGE_REPORT_ID_BYTES;
-        const uint8_t value = static_cast<uint8_t>(entry.at("value").get<int>());
+        const auto value = static_cast<uint8_t>(entry.at("value").get<int>());
         EXPECT_EQ(edge[payloadByte], value);
         fixedBytes.insert(payloadByte);
     }

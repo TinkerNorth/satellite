@@ -56,7 +56,7 @@ struct Delivery {
             return;
         }
         const auto index = static_cast<uint64_t>(record.timestampNs);
-        const size_t slot = static_cast<size_t>(producer);
+        const auto slot = static_cast<size_t>(producer);
         if (index != next[slot] || record.messageText() != "record " + std::to_string(index)) {
             ++misplaced;
         }

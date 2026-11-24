@@ -225,8 +225,9 @@ int main() {
             TEST("non-loopback Host header: 403 before any route runs");
             auto res = cli.Get("/api/status", httplib::Headers{{"Host", "evil.example"}});
             EXPECT(res && res->status == 403);
-            if (res)
+            if (res) {
                 EXPECT_EQ(jsonStr(parseJson(res->body), "error"), std::string("forbidden host"));
+            }
         }
         {
             TEST("loopback Host with port passes");
@@ -700,8 +701,9 @@ int main() {
             TEST("updates: POST repair while a check is queued replies with that check");
             auto repair = cli.Post("/api/updates/repair", "", "application/json");
             EXPECT(repair && repair->status == 200);
-            if (repair)
+            if (repair) {
                 EXPECT_EQ(jsonStr(parseJson(repair->body), "state"), std::string("checking"));
+            }
 
             g_updateService = nullptr;
         }

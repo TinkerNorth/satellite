@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <ranges>
 #include <set>
 #include <string>
 #include <thread>
@@ -57,9 +58,9 @@ class RecordingSinks {
 
     bool last(Effect effect, bool& value) const {
         std::lock_guard<std::mutex> lk(mtx_);
-        for (auto it = calls_.rbegin(); it != calls_.rend(); ++it) {
-            if (it->effect != effect) continue;
-            value = it->value;
+        for (const auto& call : std::views::reverse(calls_)) {
+            if (call.effect != effect) continue;
+            value = call.value;
             return true;
         }
         return false;

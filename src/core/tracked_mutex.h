@@ -172,7 +172,7 @@ inline uint64_t nanosBetween(Clock::time_point from, Clock::time_point to) {
 }
 
 inline size_t bucketFor(uint64_t ns) {
-    const size_t bucket = static_cast<size_t>(std::bit_width(ns));
+    const auto bucket = static_cast<size_t>(std::bit_width(ns));
     return bucket < HISTOGRAM_BUCKETS ? bucket : HISTOGRAM_BUCKETS - 1;
 }
 
@@ -379,7 +379,7 @@ inline uint64_t histogramPercentileNs(const Histogram& histogram, double fractio
     for (const uint64_t n : histogram) total += n;
     if (total == 0) return 0;
     const double wanted = fraction * static_cast<double>(total);
-    uint64_t rank = static_cast<uint64_t>(wanted);
+    auto rank = static_cast<uint64_t>(wanted);
     if (static_cast<double>(rank) < wanted) ++rank;
     if (rank == 0) rank = 1;
     uint64_t seen = 0;

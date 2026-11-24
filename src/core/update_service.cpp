@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 
 namespace {
@@ -518,7 +519,7 @@ bool progressWorthBroadcasting(uint64_t doneBefore, uint64_t totalBefore, uint64
         const uint64_t newPct = (doneNow * 100) / totalNow;
         return newPct != prevPct;
     }
-    return doneNow - doneBefore >= 256 * 1024;
+    return doneNow - doneBefore >= uint64_t{256} * 1024;
 }
 
 void UpdateService::onDownloadProgress(uint64_t soFar, uint64_t total) {

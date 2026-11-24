@@ -88,19 +88,19 @@ class RationalResampler {
     // one buffer). Streaming-safe: history and phase carry across calls, so
     // chunking the same signal differently produces the same samples.
     void process(const int16_t* in, size_t frames, std::vector<int16_t>& out) {
-        const size_t ch = static_cast<size_t>(channels_);
+        const auto ch = static_cast<size_t>(channels_);
         if (identity()) {
             out.insert(out.end(), in, in + frames * ch);
             return;
         }
         if (frames == 0) return;
 
-        const size_t histFrames = static_cast<size_t>(historyFrames());
+        const auto histFrames = static_cast<size_t>(historyFrames());
         work_.resize((histFrames + frames) * ch);
         if (histFrames > 0) std::copy(hist_.begin(), hist_.end(), work_.begin());
         std::copy(in, in + frames * ch, work_.begin() + static_cast<ptrdiff_t>(histFrames * ch));
 
-        const int64_t total = static_cast<int64_t>(histFrames + frames);
+        const auto total = static_cast<int64_t>(histFrames + frames);
         const int perPhase = RESAMPLER_TAPS_PER_PHASE;
         out.reserve(out.size() + maxOutputFrames(frames) * ch);
         while (pos_ / l_ <= total - 1) {

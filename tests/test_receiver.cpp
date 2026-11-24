@@ -2,6 +2,7 @@
 #include "../src/net/inner_dispatch.h"
 #include "../src/core/session_service.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -225,7 +226,8 @@ static void test_encodeAudioFrameHeader_byteExactAndRoundTrip() {
 // speaker path has no way to tell quiet game audio from an idle endpoint.
 static void test_isDigitalSilence() {
     TEST("isDigitalSilence: all-zero is silence, any non-zero sample is not");
-    std::vector<int16_t> zeros(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    std::vector<int16_t> zeros(static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS,
+                               0);
     EXPECT(isDigitalSilence(zeros.data(), zeros.size()));
 
     for (size_t at : {(size_t)0, zeros.size() / 2, zeros.size() - 1}) {

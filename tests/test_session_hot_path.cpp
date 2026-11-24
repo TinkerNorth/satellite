@@ -461,7 +461,7 @@ void randomColdOp(SessionService& svc, SessionState& st, Shared& sh, std::mt1993
         randomUpsert(svc, st, sh, rng);
         return;
     }
-    const uint8_t idx = static_cast<uint8_t>(rng() % PADS_PER_SESSION);
+    const auto idx = static_cast<uint8_t>(rng() % PADS_PER_SESSION);
     uint16_t epoch = 0;
     switch (rng() % 6) {
     case 0:

@@ -123,11 +123,10 @@ static void testAntisymmetry() {
     const char* vers[] = {"1.0.0",        "1.0.1",        "1.1.0",       "2.0.0",
                           "1.0.0-rc.1",   "1.0.0-rc.2",   "1.0.0-rc.10", "1.0.0-alpha",
                           "1.0.0-beta.2", "1.0.0-beta.11"};
-    const int n = static_cast<int>(sizeof(vers) / sizeof(vers[0]));
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
+    for (const char* a : vers) {
+        for (const char* b : vers) {
             TEST("antisymmetry: compare(a,b) == -compare(b,a)");
-            EXPECT(sign(compareSemver(vers[i], vers[j])) == -sign(compareSemver(vers[j], vers[i])));
+            EXPECT(sign(compareSemver(a, b)) == -sign(compareSemver(b, a)));
         }
     }
 }

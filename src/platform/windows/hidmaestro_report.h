@@ -21,6 +21,7 @@
 #include "core/types.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
@@ -446,7 +447,7 @@ inline void packSwitchBody(const InputReport& input, const MotionReport& motion,
     const int16_t gy = switchImuRaw(-dpsX, gyroScale);
     const int16_t gz = switchImuRaw(dpsY, gyroScale);
     for (int frame = 0; frame < 3; ++frame) {
-        uint8_t* p = out + 12 + frame * 12;
+        uint8_t* p = out + 12 + static_cast<ptrdiff_t>(frame) * 12;
         auto le16 = [&p](int off, int16_t v) { writeLE16(p + off, bits::asUint16(v)); };
         le16(0, ax);
         le16(2, ay);

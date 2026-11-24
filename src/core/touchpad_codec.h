@@ -32,8 +32,8 @@ inline std::array<uint8_t, 4> ds4PackTouchFinger(const TouchpadFinger& f, uint8_
     const int y = touchpadWireToRange(f.y, DS4_TOUCHPAD_RES_Y);
     std::array<uint8_t, 4> out{};
     // touchpadWireToRange keeps both in 0..res-1, so neither has a sign bit to carry.
-    const uint32_t ux = static_cast<uint32_t>(x);
-    const uint32_t uy = static_cast<uint32_t>(y);
+    const auto ux = static_cast<uint32_t>(x);
+    const auto uy = static_cast<uint32_t>(y);
     out[0] = satellite::bits::lowByte((f.active ? 0x00U : 0x80U) |
                                       (satellite::bits::u32(trackingId) & 0x7FU));
     out[1] = satellite::bits::lowByte(ux);

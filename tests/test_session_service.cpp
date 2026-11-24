@@ -16,6 +16,7 @@
 #include "../src/adapters/audio/opus_codec.h"
 #include "../src/core/audio/haptic_envelope.h"
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <cassert>
 #include <cmath>
@@ -1379,7 +1380,7 @@ static void test_lostPad_isReadUnderTheTopologyLock() {
     SessionService svc(vigem, client, log);
     std::vector<ControllerDescriptor> pads = everyPad();
     upsert(svc, pads);
-    const uint8_t last = (uint8_t)(MAX_BACKEND_CONTROLLERS - 1);
+    const auto last = (uint8_t)(MAX_BACKEND_CONTROLLERS - 1);
     const uint32_t lost = serialOfPad(svc, last);
     vigem.lostSet.insert(lost);
     std::vector<ControllerDescriptor> withoutIt(pads.begin(), pads.end() - 1);
@@ -3105,7 +3106,8 @@ static void test_speakerAudio_exactSilenceIsNotSent() {
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const uint32_t serial0 = serialOfSlot(svc, 0);
 
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS, 0);
     for (int i = 0; i < 50; i++) {
         EXPECT(svc.handleSpeakerAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     }
@@ -3523,7 +3525,7 @@ static void test_micAudio_seqWrapsMidStream() {
     // and reading 0x0000 as ancient would silence the stream from there on.
     for (int i = 0; i < 6; i++) {
         svc.resetMicRateWindowForTest(r.token, 0);
-        const uint16_t seq = (uint16_t)(0xFFFD + i);
+        const auto seq = (uint16_t)(0xFFFD + i);
         const auto pkt = mic.next();
         EXPECT(deliverMic(svc, r.token, 0, seq, pkt.data(), pkt.size()));
         EXPECT_EQ(vigem.submitMicAudioCalls, i + 1);
@@ -3784,7 +3786,8 @@ static void test_audioCounts_separateSuppressedSilenceFromSentFrames() {
     upsert(svc, {makeDesc(0, CONTROLLER_TYPE_DUALSENSE, CAP_SPEAKER)});
     const uint32_t serial0 = serialOfSlot(svc, 0);
 
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS, 0);
     for (int i = 0; i < 50; i++) {
         EXPECT(svc.handleSpeakerAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     }
@@ -3829,7 +3832,7 @@ static void test_speakerAudio_oneWindowBecomesOneWirePacket() {
     auto dec = satellite::audio::OpusStreamDecoder::create(satellite::audio::Stream::Speaker);
     EXPECT(dec != nullptr);
     if (!dec) return;
-    std::vector<int16_t> out(AUDIO_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS, 0);
+    std::vector<int16_t> out(static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_SPEAKER_CHANNELS, 0);
     EXPECT_EQ(dec->decode(client.lastSpeakerAudioOpus.data(), client.lastSpeakerAudioOpus.size(),
                           out.data(), AUDIO_FRAME_SAMPLES),
               (size_t)AUDIO_FRAME_SAMPLES);
@@ -3860,7 +3863,7 @@ static void test_speakerAudio_partialBatchesBuffer() {
     EXPECT_EQ((int)client.lastSpeakerAudioSeq, 0);
 
     // Two and a half windows: two packets out, half a window carried forward.
-    const size_t batch = AUDIO_FRAME_SAMPLES * 2 + half;
+    const size_t batch = static_cast<size_t>(AUDIO_FRAME_SAMPLES) * 2 + half;
     const auto big = speakerPcm(batch, 2);
     EXPECT(svc.handleSpeakerAudioFromBackend(serial0, big.data(), batch));
     EXPECT_EQ(client.speakerAudioCalls, 3);
@@ -4029,7 +4032,8 @@ static void test_hapticAudio_waveformToCapableSender() {
     EXPECT_EQ(client.hapticAudioCalls, 2);
 
     TEST("haptic audio: exact silence is suppressed and burns no seq");
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
     for (int i = 0; i < 20; i++) {
         EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     }
@@ -4081,7 +4085,8 @@ static void test_hapticAudio_reducedToRumbleForMotorSenders() {
     EXPECT_EQ(client.lastRumble.durationMs, satellite::audio::HAPTIC_RUMBLE_WIRE_DURATION_MS);
 
     TEST("haptic audio: silence reduces to a stop, once");
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
     EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     EXPECT_EQ(client.rumbleCalls, 2);
     EXPECT_EQ((int)client.lastRumble.strongMagnitude, 0);
@@ -4146,7 +4151,8 @@ static void test_hapticAudio_reductionReWindowsPartialBatches() {
         const auto w = hapticPcm(AUDIO_FRAME_SAMPLES, 4000.0, 4000.0, 0);
         three.insert(three.end(), w.begin(), w.end());
     }
-    EXPECT(svc.handleHapticAudioFromBackend(serial0, three.data(), 3 * AUDIO_FRAME_SAMPLES));
+    EXPECT(svc.handleHapticAudioFromBackend(serial0, three.data(),
+                                            3 * static_cast<size_t>(AUDIO_FRAME_SAMPLES)));
     EXPECT_EQ(client.rumbleCalls, 2);
 }
 
@@ -4180,7 +4186,8 @@ static void test_hapticAudio_mixesWithHidRumbleByMax() {
     EXPECT_EQ(client.lastRumble.durationMs, RUMBLE_WIRE_DURATION_MS);
 
     // The burst ends: back to exactly the HID level, in one packet.
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
     EXPECT(svc.handleHapticAudioFromBackend(serial0, silence.data(), AUDIO_FRAME_SAMPLES));
     EXPECT_EQ(client.rumbleCalls, 3);
     EXPECT_EQ((int)client.lastRumble.strongMagnitude, 30000);
@@ -4257,7 +4264,8 @@ static void test_hapticAudio_countersTrackBothRenderings() {
     const uint32_t serial0 = serialOfSlot(svc, 0);
     const uint32_t serial1 = serialOfSlot(svc, 1);
     const auto pcm = hapticPcm(AUDIO_FRAME_SAMPLES, 20000.0, 20000.0);
-    const std::vector<int16_t> silence(AUDIO_FRAME_SAMPLES * AUDIO_HAPTIC_CHANNELS, 0);
+    const std::vector<int16_t> silence(
+        static_cast<size_t>(AUDIO_FRAME_SAMPLES) * AUDIO_HAPTIC_CHANNELS, 0);
 
     for (int i = 0; i < 4; i++) {
         EXPECT(svc.handleHapticAudioFromBackend(serial0, pcm.data(), AUDIO_FRAME_SAMPLES));

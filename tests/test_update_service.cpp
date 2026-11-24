@@ -1736,8 +1736,8 @@ static void test_progressWorthBroadcasting() {
 
     TEST("progress: with no size, every quarter megabyte is worth one");
     EXPECT(!progressWorthBroadcasting(0, 0, 256 * 1024 - 1, 0));
-    EXPECT(progressWorthBroadcasting(0, 0, 256 * 1024, 0));
-    EXPECT(!progressWorthBroadcasting(256 * 1024, 0, 256 * 1024 + 100, 0));
+    EXPECT(progressWorthBroadcasting(0, 0, uint64_t{256} * 1024, 0));
+    EXPECT(!progressWorthBroadcasting(uint64_t{256} * 1024, 0, uint64_t{256} * 1024 + 100, 0));
 }
 
 int main() {

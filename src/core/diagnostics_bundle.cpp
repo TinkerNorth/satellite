@@ -171,7 +171,7 @@ size_t ipv6At(const std::string& s, size_t pos) {
 void civilFromDays(int64_t days, int64_t& y, unsigned& m, unsigned& d) {
     days += 719468;
     const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
-    const unsigned doe = static_cast<unsigned>(days - era * 146097);
+    const auto doe = static_cast<unsigned>(days - era * 146097);
     const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     const unsigned mp = (5 * doy + 2) / 153;

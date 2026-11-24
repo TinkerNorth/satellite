@@ -72,7 +72,7 @@ int countVirtualPads(uint32_t serial, int deadlineMs, int expected) {
             std::vector<const void*> raw(static_cast<size_t>(n));
             CFSetGetValues(devs, raw.data());
             for (CFIndex i = 0; i < n; i++) {
-                IOHIDDeviceRef d = (IOHIDDeviceRef)raw[static_cast<size_t>(i)];
+                auto d = (IOHIDDeviceRef)raw[static_cast<size_t>(i)];
                 CFTypeRef vid = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDVendorIDKey));
                 CFTypeRef pid = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDProductIDKey));
                 CFTypeRef ser = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDSerialNumberKey));

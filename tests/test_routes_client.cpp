@@ -340,7 +340,7 @@ int main() {
                 connId = jsonStr(j, "connectionId");
                 EXPECT_EQ(connId.rfind("conn_", 0), size_t{0});
                 EXPECT(isHex(jsonStr(j, "token"), 8));
-                EXPECT(isHex(jsonStr(j, "sessionSalt"), SESSION_SALT_SIZE * 2));
+                EXPECT(isHex(jsonStr(j, "sessionSalt"), size_t{SESSION_SALT_SIZE} * 2));
                 EXPECT_EQ(jsonInt(j, "protocolVersion"), static_cast<long>(PROTOCOL_VERSION));
                 EXPECT_EQ(jsonInt(j, "maxControllers"), static_cast<long>(MAX_BACKEND_CONTROLLERS));
                 EXPECT(j.contains("controllers") && j["controllers"].is_array() &&

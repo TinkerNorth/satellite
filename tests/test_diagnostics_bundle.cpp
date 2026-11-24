@@ -376,7 +376,7 @@ static void test_bundle_controller_input_output() {
     EXPECT_EQ(out["triggerEffects"]["last"].value("left", std::string()).substr(0, 2),
               std::string("21"));
     EXPECT_EQ(out["triggerEffects"]["last"].value("right", std::string()).size(),
-              size_t{2 * TRIGGER_EFFECT_BLOCK_BYTES});
+              size_t{2} * TRIGGER_EFFECT_BLOCK_BYTES);
     EXPECT_EQ(out["micLed"].value("count", 0), 3);
     EXPECT_EQ(out["micLed"]["last"].value("state", std::string()), std::string("pulse"));
 

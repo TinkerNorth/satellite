@@ -55,7 +55,7 @@ inline uint16_t hapticLaneMagnitude(const int16_t* pcm, size_t frames, int chann
     }
     double sumSquares = 0.0;
     for (size_t f = 0; f < frames; f++) {
-        const double s = static_cast<double>(
+        const auto s = static_cast<double>(
             pcm[f * static_cast<size_t>(channels) + static_cast<size_t>(channel)]);
         sumSquares += s * s;
     }

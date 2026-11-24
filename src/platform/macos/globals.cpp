@@ -23,7 +23,7 @@ std::atomic<uint64_t> g_decryptFail{0};
 std::atomic<uint64_t> g_replayDrop{0};
 
 satellite::LogWriter& logWriter() {
-    static satellite::LogWriter* const writer = new satellite::LogWriter();
+    static auto* const writer = new satellite::LogWriter();
     return *writer;
 }
 

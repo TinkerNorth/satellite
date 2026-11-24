@@ -323,7 +323,7 @@ std::vector<LocalInterface> enumerateInterfaces(bool) {
     for (struct ifaddrs* a = addrs; a != nullptr; a = a->ifa_next) {
         if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET) { continue; }
         if ((a->ifa_flags & IFF_UP) == 0 || (a->ifa_flags & IFF_LOOPBACK) != 0) { continue; }
-        sockaddr_in* sa = reinterpret_cast<sockaddr_in*>(a->ifa_addr);
+        auto* sa = reinterpret_cast<sockaddr_in*>(a->ifa_addr);
         char buf[INET_ADDRSTRLEN] = {};
         if (inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf)) == nullptr) { continue; }
         LocalInterface f;

@@ -14,6 +14,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -28,7 +29,7 @@ namespace lifecycle {
 
 namespace {
 
-constexpr size_t kMaxLogFileBytes = 5 * 1024 * 1024;
+constexpr size_t kMaxLogFileBytes = size_t{5} * 1024 * 1024;
 constexpr int kLogRetentionDays = 7;
 constexpr int kMaxRotatedSuffix = 100;
 constexpr size_t kLogExtensionLength = 4;

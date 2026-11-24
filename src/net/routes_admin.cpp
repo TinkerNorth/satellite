@@ -637,8 +637,9 @@ static std::string sseTick(SessionService& svc) {
     // The dashboard renders one device-centric list, so it needs the paired
     // set on every tick, not just the live connections.
     frame += sseEvent("devices", buildDevicesJson(svc));
-    if (g_updateService != nullptr)
+    if (g_updateService != nullptr) {
         frame += sseEvent("update", buildUpdateJson(g_updateService->snapshot()));
+    }
     // Pushed each tick so the countdown ticks and a fresh tab sees current
     // state without a parallel /api/pin/status poll.
     frame += sseEvent("pin", buildPinJson());

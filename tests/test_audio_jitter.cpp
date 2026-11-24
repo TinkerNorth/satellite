@@ -234,7 +234,7 @@ void test_wrap_inOrderAcrossZero() {
     AudioJitterWindow w;
     const uint16_t start = 0xFFFD;
     for (int i = 0; i < 6; i++) {
-        const uint16_t seq = static_cast<uint16_t>(start + i);
+        const auto seq = static_cast<uint16_t>(start + i);
         const auto r = push(w, seq, packet(static_cast<uint8_t>(0x50 + i)));
         EXPECT(r.accept == Accept::Ok);
         EXPECT_EQ(r.count, 1);

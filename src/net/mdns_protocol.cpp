@@ -438,8 +438,8 @@ size_t encodeResponse(uint8_t* out, size_t outCap, uint16_t txId, const Response
     const bool emitSrv = !inputs.suppressSrv;
     const bool emitTxt = !inputs.suppressTxt;
     const bool emitA = (inputs.ipv4 != nullptr) && !inputs.suppressA;
-    const uint16_t answerCount = static_cast<uint16_t>((emitPtr ? 1 : 0) + (emitSrv ? 1 : 0) +
-                                                       (emitTxt ? 1 : 0) + (emitA ? 1 : 0));
+    const auto answerCount = static_cast<uint16_t>((emitPtr ? 1 : 0) + (emitSrv ? 1 : 0) +
+                                                   (emitTxt ? 1 : 0) + (emitA ? 1 : 0));
     // Every record suppressed → "send nothing" (RFC 6762 §7.1).
     if (answerCount == 0) return 0;
 

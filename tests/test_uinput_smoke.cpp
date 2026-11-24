@@ -101,7 +101,7 @@ bool waitForKeyEvent(int fd, uint16_t code, int32_t value, int deadlineMs) {
 }
 
 bool hasKey(const unsigned long* keys, int code) {
-    const size_t index = static_cast<size_t>(code);
+    const auto index = static_cast<size_t>(code);
     return ((keys[index / kBitsPerLong] >> (index % kBitsPerLong)) & 1UL) != 0;
 }
 
@@ -332,8 +332,9 @@ int main() {
         EXPECT(edgeId.vendor == 0x054c && edgeId.product == 0x0df2);
         unsigned long edgeKeys[KEY_MAX / kBitsPerLong + 1] = {};
         EXPECT(edgeFd >= 0 && ::ioctl(edgeFd, EVIOCGBIT(EV_KEY, sizeof(edgeKeys)), edgeKeys) >= 0);
-        for (int code : {BTN_GRIPL, BTN_GRIPR, BTN_GRIPL2, BTN_GRIPR2})
+        for (int code : {BTN_GRIPL, BTN_GRIPR, BTN_GRIPL2, BTN_GRIPR2}) {
             EXPECT(hasKey(edgeKeys, code));
+        }
 
         TEST("DualSense Edge: each back button presses its grip key, and lets go of it");
         const struct {
